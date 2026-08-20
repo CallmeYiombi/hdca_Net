@@ -1,0 +1,36 @@
+# HDCA-Net, reported configuration: direct-target gene mask, cross-study evaluation.
+mat_dir: data/matrices_gdsc12
+hcdt_drug_gene_file: hcdt_drug_gene_pruned.npy
+out_dir: results/hdca_gdsc12_pruned_div03
+
+val_strategy: random
+val_frac: 0.1
+
+drug_enc_hidden: 512
+drug_enc_out: 256
+gate_mode: hard
+gate_gamma: 2.0
+fp_input_dropout: 0.0
+use_mutation: false
+dropout: 0.3
+lambda_neg: 0.1
+mask_dropout: 0.1
+
+lambda_align_div: 0.3
+
+seed: 42
+epochs: 120
+batch_size: 1024
+lr: 0.0001
+weight_decay: 0.00001
+lr_patience: 15
+early_stop: 80
+num_workers: 4
+
+cross_hook_every: 5
+
+ablation_epochs: 60
+ablation_early_stop: 15
+ablation_lr_patience: 5
+
+cuda_device: 4

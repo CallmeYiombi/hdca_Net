@@ -1,0 +1,28 @@
+# HDCA-Net, random-split and drug-fold training on GDSC1+2.
+mat_dir: data/matrices_gdsc12
+out_dir: results/hdca_gdsc12
+
+drug_enc_hidden: 512
+drug_enc_out: 256
+gate_mode: hard
+gate_gamma: 2.0
+fp_input_dropout: 0.0
+use_mutation: false
+dropout: 0.3
+lambda_neg: 0.1
+mask_dropout: 0.1
+
+seed: 42
+epochs: 150
+batch_size: 1024
+lr: 0.0003
+weight_decay: 0.00001
+lr_patience: 7
+early_stop: 30
+num_workers: 4
+
+ablation_epochs: 60
+ablation_early_stop: 15
+ablation_lr_patience: 5
+
+cuda_device: 4
