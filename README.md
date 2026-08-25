@@ -27,7 +27,9 @@ build the matrices:
 ```bash
 # GDSC1 + GDSC2 training matrices
 python src/data/build_gdsc12_matrices.py
-python src/data/build_drug_fp.py
+python src/data/build_drug_graphs.py    # resolves SMILES; also builds the graphs PANCDR needs
+python src/data/build_drug_fp.py        # rebuilds drug_fp.npy from those SMILES
+python scripts/build_pruned_mask.py     # direct-target gene mask used by the reported model
 
 # External evaluation sets (CCLE, gCSI) via PharmacoGx
 Rscript scripts/download_pharmacodb.R
@@ -37,6 +39,13 @@ python src/data/build_cross_eval_matrices.py
 
 This writes `data/matrices_gdsc12/` and `data/matrices_{ccle_2015,gcsi_2019}/`, each holding a
 sample table together with the expression, fingerprint and prior matrices.
+
+The fingerprints written by `build_gdsc12_matrices.py` are mostly empty: its SMILES lookup
+misses most compounds. `build_drug_graphs.py` resolves SMILES properly (PubChem with a
+property-name fallback, then ChEMBL) into `drug_smiles.csv`, and `build_drug_fp.py` rebuilds
+`drug_fp.npy` from it. Both are required to reproduce the reported runs, which use 433/542
+non-zero fingerprints; the remaining 109 compounds keep zero vectors. `build_drug_graphs.py`
+also writes the atom-feature and adjacency arrays that the PANCDR baseline loads.
 
 ## Training
 
