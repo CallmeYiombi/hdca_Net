@@ -6,7 +6,7 @@ Similarity (TSGS) and Association (TSGA) attention over gene pairs.
 
 Here we capture the core idea of biology-guided gene grouping:
   - Gene expression is aggregated into pathway-level vectors via a
-    fixed gene_pathway membership matrix (same matrix HCP-Net uses),
+    fixed gene_pathway membership matrix (the same matrix HDCA-Net uses),
     then refined with a learned self-attention over pathways.
   - Drug encoder uses FP for fair comparison.
 

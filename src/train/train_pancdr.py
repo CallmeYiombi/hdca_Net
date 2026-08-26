@@ -7,11 +7,11 @@ Usage
 PYTHONPATH=. python src/train/train_pancdr.py \
     --mat_dir data/matrices_gdsc12 --split cross \
     --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019 \
-    --gpu 6 --out_dir results/baselines
+    --gpu 0 --out_dir results/baselines
 
 # random split (in-distribution, Table 1) and drug 5-fold (Table 2):
-PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split random --gpu 6
-PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split drug   --gpu 6
+PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split random --gpu 0
+PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split drug   --gpu 0
 
 Notes
 -----

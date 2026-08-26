@@ -206,10 +206,10 @@ def main():
     if results:
         eval_dirs_str = " ".join(str(r) for r in results)
         print(f"\nNext:")
-        print(f"  python src/train/eval_cross_dataset.py \\")
-        print(f"    --config configs/mp_hcpnet_gdsc12.yaml \\")
-        print(f"    --eval_dirs {eval_dirs_str} \\")
-        print(f"    --gpu 4")
+        print(f"  python src/train/train_hdca.py \\")
+        print(f"    --config configs/hdca_gdsc12_cross_pruned_div03.yaml \\")
+        print(f"    --mode cross --align both \\")
+        print(f"    --eval_dirs {eval_dirs_str}")
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
 """
-Split strategies for PG-HCPNet.
+Split strategies for HDCA-Net.
 All return (train_idx, val_idx, test_idx) as numpy arrays of row indices
 into sample_table.
 """

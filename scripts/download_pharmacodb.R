@@ -1,9 +1,10 @@
-# Download the CCLE and gCSI PSets from PharmacoDB (PharmacoGx).
+# Download the CCLE and gCSI PSets from PharmacoDB and export their contents as CSV.
 #
-#   data/pharmacodb/psets/*.rds
+# Downloads to  data/pharmacodb/psets/*.rds
+# Writes tables to  data/pharmacodb/raw/<pset>/
 #
-#
-#   Rscript scripts/export_pharmacodb_from_local_rds.R
+# Run scripts/extract_pharmacodb.R next to assemble the sensitivity and
+# expression tables used by src/data/build_cross_eval_matrices.py.
 
 library(PharmacoGx)
 library(data.table)
@@ -124,6 +125,7 @@ for (pset_name in target_names) {
       }
     }
 
+    # -- 4. Molecular profiles --------------------------------------------
     cat("  Checking molecular profiles...\n")
 
     mol_types <- tryCatch(
@@ -267,4 +269,4 @@ for (pset_name in target_names) {
 
 cat("\n=== Export complete ===\n")
 cat(sprintf("Output: %s\n", OUT_DIR))
-cat("Next: python src/data/build_pharmacodb_matrices.py\n")
+cat("Next: Rscript scripts/extract_pharmacodb.R\n")

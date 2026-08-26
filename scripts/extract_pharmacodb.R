@@ -1,5 +1,7 @@
 # Export sensitivity and expression tables from the downloaded PSets.
-# scripts/extract_pharmacodb.R
+#
+# Reads  data/pharmacodb/raw/<pset>/  and writes the per-dataset tables that
+# src/data/build_cross_eval_matrices.py turns into evaluation matrices.
 
 suppressPackageStartupMessages({
   library(PharmacoGx)
@@ -386,4 +388,4 @@ for (rds_path in rds_files) {
 
 cat("\n=== Extraction complete ===\n")
 cat(sprintf("Output: %s\n", OUT_DIR))
-cat("Next: python src/data/build_pharmacodb_matrices.py\n")
+cat("Next: python src/data/build_cross_eval_matrices.py\n")

@@ -306,17 +306,7 @@ if CID_CACHE.exists():
     cov = (hcdt_drug_gene.sum(axis=1) > 0).sum()
     print(f"    CID augmentation: +{cid_added} entries -> {cov}/{num_drugs} ({100*cov/num_drugs:.1f}%)")
 else:
-    print("  [skip] PubChem CID cache not found. Run: python src/data/fetch_pubchem_cids.py")
-
-print("  lincs_drug_gene (placeholder)...")
-lincs_path = OUT / "lincs_drug_gene.npy"
-if lincs_path.exists():
-    lincs_drug_gene = np.load(lincs_path)
-    cov = (lincs_drug_gene.sum(axis=1) > 0).sum()
-    print(f"    loaded existing lincs_drug_gene: {lincs_drug_gene.shape}, coverage {cov}/{num_drugs}")
-else:
-    lincs_drug_gene = np.zeros((num_drugs, num_genes), dtype=np.float32)
-    print(f"    placeholder zeros {lincs_drug_gene.shape} -- run build_lincs_matrices.py for real data")
+    print("  [skip] no PubChem CID cache; drug-gene coverage stays at the name-matched set")
 
 print("  hcdt_drug_path_direct...")
 dp = pd.read_excel(HCDT / "DRUG_PATHWAY" / "Drug-Pathway.xlsx")
@@ -345,7 +335,6 @@ np.save(OUT / "drug_fp.npy",               drug_fp)
 np.save(OUT / "cell_expr.npy",             cell_expr)
 np.save(OUT / "cell_mut.npy",              cell_mut)
 np.save(OUT / "hcdt_drug_gene.npy",        hcdt_drug_gene)
-np.save(OUT / "lincs_drug_gene.npy",       lincs_drug_gene)
 np.save(OUT / "hcdt_drug_path_direct.npy", hcdt_drug_path_direct)
 np.save(OUT / "hcdt_neg_drug_gene.npy",    hcdt_neg_drug_gene)
 np.save(OUT / "gene_pathway.npy",          gene_pathway)
@@ -378,10 +367,9 @@ print(f"  drug_fp:               {drug_fp.shape}")
 print(f"  cell_expr:             {cell_expr.shape}")
 print(f"  cell_mut:              {cell_mut.shape}")
 print(f"  hcdt_drug_gene:        {hcdt_drug_gene.shape}")
-print(f"  lincs_drug_gene:       {lincs_drug_gene.shape}")
 print(f"  hcdt_drug_path_direct: {hcdt_drug_path_direct.shape}")
 print(f"  hcdt_neg_drug_gene:    {hcdt_neg_drug_gene.shape}")
 print(f"  gene_pathway:          {gene_pathway.shape}")
 print(f"  sample_table:          {sample_table.shape}")
 print(f"\nOutput: {OUT}")
-print("Next: set mat_dir: data/matrices_gdsc12 in configs/mp_hcpnet.yaml")
+print("Next: python src/data/build_drug_graphs.py, then build_drug_fp.py and scripts/build_pruned_mask.py")

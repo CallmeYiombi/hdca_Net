@@ -12,20 +12,20 @@ Examples
 --------
   # Main random-split run (both branches)
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode random --align both --gpu 4
+      --mode random --align both --gpu 0
 
   # Branch ablation, drug-5fold
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode drug5 --align gene     --gpu 4
+      --mode drug5 --align gene     --gpu 0
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode drug5 --align pathway  --gpu 4
+      --mode drug5 --align pathway  --gpu 0
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode drug5 --align both     --gpu 4
+      --mode drug5 --align both     --gpu 0
 
   # Cross-dataset evaluation
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
       --mode cross --align both \\
-      --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019 --gpu 4
+      --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019 --gpu 0
 """
 import os, sys, json, time, argparse
 import numpy as np
@@ -38,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from src.models.hdca_net import HDCANet
-from src.data.dataset_mp import MPHCPNetDataset
+from src.data.dataset_hdca import HDCADataset
 from src.data.split import random_split, drug_kfold
 from src.utils.seed import set_seed
 from src.utils.metrics import compute_metrics
@@ -56,7 +56,6 @@ def load_matrices(mat_dir, drug_gene_file="hcdt_drug_gene.npy",
         "drug_fp":               load("drug_fp.npy"),
         "cell_expr":             load("cell_expr.npy"),
         "hcdt_drug_gene":        load(drug_gene_file),
-        "hcdt_drug_disease":     load("hcdt_drug_disease.npy"),
         "hcdt_drug_path_direct": load(drug_path_file),
         "hcdt_neg_drug_gene":    load("hcdt_neg_drug_gene.npy"),
         "gene_pathway":          load("gene_pathway.npy"),
@@ -89,11 +88,10 @@ def build_model(cfg, gene_pathway_t, align_branches, device):
 def make_loader(indices, sample_table, mat, cfg, shuffle, y_mean, y_std,
                 cell_expr_override=None):
     cell_expr = cell_expr_override if cell_expr_override is not None else mat["cell_expr"]
-    ds = MPHCPNetDataset(
+    ds = HDCADataset(
         sample_indices=indices, sample_table=sample_table,
         drug_fp=mat["drug_fp"], cell_expr=cell_expr,
         hcdt_drug_gene=mat["hcdt_drug_gene"],
-        hcdt_drug_disease=mat["hcdt_drug_disease"],
         hcdt_drug_path=mat["hcdt_drug_path_direct"],
         hcdt_neg_drug_gene=mat["hcdt_neg_drug_gene"],
         y_mean=y_mean, y_std=y_std,
@@ -112,14 +110,14 @@ def run_epoch(model, loader, optimizer, device, cfg, train=True):
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
         for batch in loader:
-            drug_fp, cell_expr, dg, dr, dp, neg, y = batch
+            drug_fp, cell_expr, dg, dp, neg, y = batch
             drug_fp   = drug_fp.to(device);   cell_expr = cell_expr.to(device)
-            dg        = dg.to(device);         dr        = dr.to(device)
-            dp        = dp.to(device);         neg       = neg.to(device)
+            dg        = dg.to(device);         dp        = dp.to(device)
+            neg       = neg.to(device)
             y         = y.to(device)
 
             y_pred, neg_loss, align_weights, gene_entropy = model(
-                drug_fp, cell_expr, dg, dr, dp,
+                drug_fp, cell_expr, dg, dp,
                 hcdt_neg_gene=neg if train else None,
             )
             loss = nn.functional.mse_loss(y_pred.squeeze(), y)
@@ -226,9 +224,9 @@ def test_metrics(model, te_loader, device, y_mean, y_std, save_path=None):
     all_y, all_pred = [], []
     with torch.no_grad():
         for batch in te_loader:
-            drug_fp, cell_expr, dg, dr, dp, neg, y = batch
+            drug_fp, cell_expr, dg, dp, neg, y = batch
             y_pred, *_ = model(drug_fp.to(device), cell_expr.to(device),
-                                 dg.to(device), dr.to(device), dp.to(device))
+                                 dg.to(device), dp.to(device))
             all_y.append(y.numpy())
             all_pred.append(y_pred.squeeze().cpu().numpy())
     y_true = np.concatenate(all_y)    * y_std + y_mean

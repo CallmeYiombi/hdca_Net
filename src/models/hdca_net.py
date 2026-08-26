@@ -1,47 +1,32 @@
 """
 HDCA-Net: Hierarchical Drug-Cell Cross-Alignment Network.
 
-Contribution
-------------
-Existing drug-response models compute a drug representation and a cell
-representation separately, then concatenate (or element-wise interact) the two
-for prediction. This treats drug and cell as independent feature spaces and
-relies on the predictor MLP to discover their interaction.
-
-HDCA-Net instead introduces an **explicit cross-alignment** between drug-target
-signals and cancer cell dysregulation at **two biological scales**:
+Most drug-response models encode the drug and the cell line separately and leave
+their interaction to the predictor MLP. HDCA-Net instead aligns drug-target signal
+with cell state explicitly, at two biological scales:
 
   (1) Gene-level alignment
-        gene_attn   = TargetGate(z_d, HCDT_drug_gene)         (B, G)
+        gene_attn    = TargetGate(z_d, hcdt_drug_gene)         (B, G)
         gene_aligned = gene_attn * cell_expr                   (B, G)
         p_gene_align = PathwayBottleneck(gene_aligned)         (B, P)
 
-      Reads as: "How strongly are the drug's target genes expressed
-      in this specific cancer cell, aggregated per pathway?"
+      How strongly are the drug's target genes expressed in this cell line,
+      aggregated per pathway?
 
   (2) Pathway-level alignment
-        path_attn    = DirectGate(z_d, HCDT_drug_path)         (B, P)
+        path_attn    = DirectPathwayGate(z_d, hcdt_drug_path)  (B, P)
         cell_path    = CellEncoder(cell_expr)                  (B, P)
         p_path_align = path_attn * cell_path                   (B, P)
 
-      Reads as: "How active are the drug's annotated pathways
-      in this specific cancer cell?"
+      How active are the drug's annotated pathways in this cell line?
 
-The two alignment vectors are fused by a drug-conditional 2-way attention,
-yielding a single mechanism-aware drug-cell representation p_align (B, P).
-Final prediction uses cat([p_align, cell_path, p_align*cell_path,
-|p_align - cell_path|]) -> MLP.
+A drug-conditional 2-way attention fuses the branches into p_align (B, P), and the
+prediction head consumes cat([p_align, cell_path, p_align * cell_path,
+|p_align - cell_path|]).
 
-Key design choices
-------------------
-- No MultiPathFusion 3-way competition (prior MP-HCPNet collapse mode removed).
-- Path1 and Path3 are repurposed from "drug-only representations" to
-  "drug-cell alignment representations", so they no longer model the same
-  drug signal in parallel.
-- Cell expression participates in BOTH alignment branches, anchoring the
-  representation to the specific cell line rather than the drug identity.
-- Interpretability: gene_attn, path_attn, and the alignment weights are
-  individually inspectable.
+Cell expression enters both branches, so the representation is anchored to the cell
+line rather than to drug identity, and gene_attn, path_attn and the fusion weights
+are each inspectable for the interpretability analyses.
 """
 import torch
 import torch.nn as nn
@@ -194,7 +179,6 @@ class HDCANet(nn.Module):
                 drug_fp: torch.Tensor,
                 cell_expr: torch.Tensor,
                 hcdt_drug_gene: torch.Tensor,
-                hcdt_drug_disease: torch.Tensor,
                 hcdt_drug_path: torch.Tensor,
                 hcdt_neg_gene: torch.Tensor = None,
                 cell_mut: torch.Tensor = None):

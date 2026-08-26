@@ -16,7 +16,7 @@ Usage:
       --model_path results/hdca_gdsc12_diag2/cross_dataset/gene_pathway/best.pt \\
       --align both \\
       --out_dir results/interpret_hdca/cross \\
-      --gpu 4
+      --gpu 0
 """
 import os, sys, json, argparse
 import numpy as np
@@ -34,7 +34,7 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from src.models.hdca_net import HDCANet
-from src.data.dataset_mp import MPHCPNetDataset
+from src.data.dataset_hdca import HDCADataset
 
 ALIGN_PRESETS = {
     "gene":    ("gene",),
@@ -71,7 +71,6 @@ def load_matrices(mat_dir, drug_gene_file="hcdt_drug_gene.npy",
         "drug_fp":               load("drug_fp.npy"),
         "cell_expr":             load("cell_expr.npy"),
         "hcdt_drug_gene":        load(drug_gene_file),
-        "hcdt_drug_disease":     load("hcdt_drug_disease.npy"),
         "hcdt_drug_path_direct": load(drug_path_file),
         "hcdt_neg_drug_gene":    load("hcdt_neg_drug_gene.npy"),
         "gene_pathway":          load("gene_pathway.npy"),
@@ -96,11 +95,10 @@ def extract_scores(model, mat, cfg, device, align_branches):
     counts = np.zeros(num_drugs, dtype=np.int64)
 
     all_idx = np.arange(len(sample_table))
-    ds = MPHCPNetDataset(
+    ds = HDCADataset(
         sample_indices=all_idx, sample_table=sample_table,
         drug_fp=mat["drug_fp"], cell_expr=mat["cell_expr"],
         hcdt_drug_gene=mat["hcdt_drug_gene"],
-        hcdt_drug_disease=mat["hcdt_drug_disease"],
         hcdt_drug_path=mat["hcdt_drug_path_direct"],
         hcdt_neg_drug_gene=mat["hcdt_neg_drug_gene"],
         y_mean=0.0, y_std=1.0,
@@ -118,7 +116,7 @@ def extract_scores(model, mat, cfg, device, align_branches):
     pos = 0
     with torch.no_grad():
         for batch in loader:
-            drug_fp, cell_expr, dg, dd, dp, neg, y = batch
+            drug_fp, cell_expr, dg, dp, neg, y = batch
             out = model.get_alignment_scores(
                 drug_fp.to(device), cell_expr.to(device),
                 dg.to(device), dp.to(device),

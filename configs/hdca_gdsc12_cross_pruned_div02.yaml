@@ -32,5 +32,3 @@ cross_hook_every: 5
 ablation_epochs: 60
 ablation_early_stop: 15
 ablation_lr_patience: 5
-
-cuda_device: 4

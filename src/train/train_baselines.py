@@ -1,16 +1,16 @@
 """
-Benchmark: GraphDRP, DeepCDR, TGSA vs HCP-Net baselines.
+Benchmark: GraphDRP, DeepCDR and TGSA against HDCA-Net.
 
 All models use 2048-dim Morgan fingerprints as drug input for fair comparison.
 Runs random-split (80/10/10), drug-5fold, and cross-dataset evaluations.
 
 Usage:
   python src/train/train_baselines.py --mat_dir data/matrices_gdsc12 \\
-         --hcdt_dir data/HCDT2.0 --split random --gpu 4
+         --hcdt_dir data/HCDT2.0 --split random --gpu 0
   python src/train/train_baselines.py --mat_dir data/matrices_gdsc12 \\
-         --hcdt_dir data/HCDT2.0 --split drug  --gpu 4
+         --hcdt_dir data/HCDT2.0 --split drug  --gpu 0
   python src/train/train_baselines.py --mat_dir data/matrices_gdsc12 \\
-         --hcdt_dir data/HCDT2.0 --split cross --gpu 4 \\
+         --hcdt_dir data/HCDT2.0 --split cross --gpu 0 \\
          --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019
 """
 import os, sys, argparse, json, time, logging
