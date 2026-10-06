@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class DrugEncoder(nn.Module):
     def __init__(self, fp_dim: int = 2048, hidden_dim: int = 512, out_dim: int = 256,
                  dropout: float = 0.3, fp_input_dropout: float = 0.0):

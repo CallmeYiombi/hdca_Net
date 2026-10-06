@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class PathwayBottleneck(nn.Module):
     """
     Aggregates gene-level scores into pathway-level scores using a fixed
@@ -9,15 +10,15 @@ class PathwayBottleneck(nn.Module):
     """
     def __init__(self, gene_pathway_matrix: torch.Tensor, normalize: bool = True):
         super().__init__()
-        A = gene_pathway_matrix.float()
+        A = gene_pathway_matrix.float()          # (G, P)
         if normalize:
             pathway_size = A.sum(dim=0).clamp(min=1.0)
             A = A / torch.sqrt(pathway_size)
-        self.register_buffer("A", A)
+        self.register_buffer("A", A)             # (G, P)
 
     def forward(self, gene_score: torch.Tensor) -> torch.Tensor:
         """
         gene_score : (B, G)
         returns    : (B, P)
         """
-        return gene_score @ self.A
+        return gene_score @ self.A               # (B, P)

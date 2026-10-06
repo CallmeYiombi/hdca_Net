@@ -1,16 +1,16 @@
 """
-Benchmark: GraphDRP, DeepCDR and TGSA against HDCA-Net.
+Benchmark: GraphDRP, DeepCDR, TGSA vs HCP-Net baselines.
 
 All models use 2048-dim Morgan fingerprints as drug input for fair comparison.
 Runs random-split (80/10/10), drug-5fold, and cross-dataset evaluations.
 
 Usage:
   python src/train/train_baselines.py --mat_dir data/matrices_gdsc12 \\
-         --hcdt_dir data/HCDT2.0 --split random --gpu 0
+         --hcdt_dir data/HCDT2.0 --split random --gpu 4
   python src/train/train_baselines.py --mat_dir data/matrices_gdsc12 \\
-         --hcdt_dir data/HCDT2.0 --split drug  --gpu 0
+         --hcdt_dir data/HCDT2.0 --split drug  --gpu 4
   python src/train/train_baselines.py --mat_dir data/matrices_gdsc12 \\
-         --hcdt_dir data/HCDT2.0 --split cross --gpu 0 \\
+         --hcdt_dir data/HCDT2.0 --split cross --gpu 4 \\
          --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019
 """
 import os, sys, argparse, json, time, logging
@@ -30,6 +30,7 @@ from src.data.split                import random_split, drug_kfold
 from src.utils.seed                import set_seed
 from src.utils.metrics             import compute_metrics
 
+# ── Hyper-parameters (mirroring ablation_mp.py budget) ───────────────────────
 EPOCHS      = 150
 EARLY_STOP  = 30
 LR_PATIENCE = 7
@@ -40,6 +41,8 @@ DROPOUT     = 0.3
 SEED        = 42
 NUM_WORKERS = 4
 
+
+# ── Gene–pathway matrix builder (needed for TGSA) ────────────────────────────
 def build_gene_pathway(hcdt_dir: str, gene_symbol_to_gidx: dict,
                        num_genes: int, cache_path: str) -> np.ndarray:
     if os.path.exists(cache_path):
@@ -65,6 +68,8 @@ def build_gene_pathway(hcdt_dir: str, gene_symbol_to_gidx: dict,
     logging.getLogger("baselines").info(f"gene_pathway built: {mat.shape}")
     return mat
 
+
+# ── Data loading ──────────────────────────────────────────────────────────────
 def load_data(mat_dir: str, hcdt_dir: str):
     drug_fp    = np.load(os.path.join(mat_dir, "drug_fp.npy"))
     cell_expr  = np.load(os.path.join(mat_dir, "cell_expr.npy"))
@@ -75,7 +80,7 @@ def load_data(mat_dir: str, hcdt_dir: str):
         id_maps = json.load(f)
 
     gene_sym_map = id_maps.get("gene_symbol_to_idx", {})
-    num_genes    = drug_fp.shape[0]
+    num_genes    = drug_fp.shape[0]   # will be overridden below
     num_genes    = cell_expr.shape[1]
 
     cache = os.path.join(mat_dir, "gene_pathway.npy")
@@ -83,23 +88,30 @@ def load_data(mat_dir: str, hcdt_dir: str):
 
     return drug_fp, cell_expr, cell_mut, gene_pathway, sample_tbl
 
+
+# ── Model factory ─────────────────────────────────────────────────────────────
 def make_model(name: str, fp_dim: int, num_genes: int,
-               gene_pathway_t: torch.Tensor) -> nn.Module:
+               gene_pathway_t: torch.Tensor,
+               aux_mode: str = "none", mask_dropout: float = 0.1) -> nn.Module:
+    kw = dict(fp_dim=fp_dim, num_genes=num_genes, dropout=DROPOUT,
+              aux_mode=aux_mode, mask_dropout=mask_dropout)
     if name == "GraphDRP":
-        return GraphDRP(fp_dim=fp_dim, num_genes=num_genes, dropout=DROPOUT)
+        return GraphDRP(**kw)
     if name == "DeepCDR":
-        return DeepCDR(fp_dim=fp_dim, num_genes=num_genes, dropout=DROPOUT)
+        return DeepCDR(**kw)
     if name == "TGSA":
-        return TGSA(fp_dim=fp_dim, num_genes=num_genes,
-                    gene_pathway_matrix=gene_pathway_t, dropout=DROPOUT)
+        return TGSA(gene_pathway_matrix=gene_pathway_t, **kw)
     raise ValueError(name)
 
+
+# ── Training helpers ──────────────────────────────────────────────────────────
 def make_loader(indices, sample_tbl, drug_fp, cell_expr, cell_mut,
-                y_mean, y_std, shuffle):
+                y_mean, y_std, shuffle, drug_target=None):
     ds = BaselineDataset(indices, sample_tbl, drug_fp, cell_expr, cell_mut,
-                         y_mean, y_std)
+                         y_mean, y_std, drug_target=drug_target)
     return DataLoader(ds, batch_size=BATCH_SIZE, shuffle=shuffle,
                       num_workers=NUM_WORKERS, pin_memory=True)
+
 
 def run_epoch(model, loader, optimizer, device, train: bool):
     model.train() if train else model.eval()
@@ -107,13 +119,10 @@ def run_epoch(model, loader, optimizer, device, train: bool):
 
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
-        for fp, expr, mut, y in loader:
-            fp, expr, mut, y = fp.to(device), expr.to(device), mut.to(device), y.to(device)
-
-            if isinstance(model, DeepCDR):
-                y_pred = model(fp, expr, mut)
-            else:
-                y_pred = model(fp, expr)
+        for fp, expr, mut, tgt, y in loader:
+            fp, expr, mut, tgt, y = (fp.to(device), expr.to(device), mut.to(device),
+                                     tgt.to(device), y.to(device))
+            y_pred = model(fp, expr, mut, tgt)
 
             loss = nn.functional.mse_loss(y_pred.squeeze(), y)
             if train:
@@ -131,15 +140,23 @@ def run_epoch(model, loader, optimizer, device, train: bool):
     m["loss"] = total_loss / len(y_cat)
     return m
 
+
 def train_one(model, tr_loader, va_loader, te_loader,
-              device, out_dir, y_mean, y_std):
+              device, out_dir, y_mean, y_std, save_path=None, eval_only=False):
     os.makedirs(out_dir, exist_ok=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=LR_PATIENCE, factor=0.5)
 
     best_val, best_ep = float("inf"), 0
-    for epoch in range(1, EPOCHS + 1):
+    if eval_only:
+        # forward-only pass over an existing checkpoint; nothing is retrained
+        print(f"  [eval_only] {out_dir}/best.pt")
+        best_ep = -1
+        EPOCHS_LOCAL = 0
+    else:
+        EPOCHS_LOCAL = EPOCHS
+    for epoch in range(1, EPOCHS_LOCAL + 1):
         run_epoch(model, tr_loader, optimizer, device, train=True)
         va = run_epoch(model, va_loader, optimizer, device, train=False)
         scheduler.step(va["loss"])
@@ -154,18 +171,25 @@ def train_one(model, tr_loader, va_loader, te_loader,
     model.eval()
     all_y, all_pred = [], []
     with torch.no_grad():
-        for fp, expr, mut, y in te_loader:
-            fp, expr, mut = fp.to(device), expr.to(device), mut.to(device)
-            y_pred = model(fp, expr, mut) if isinstance(model, DeepCDR) else model(fp, expr)
+        for fp, expr, mut, tgt, y in te_loader:
+            fp, expr, mut, tgt = (fp.to(device), expr.to(device), mut.to(device),
+                                  tgt.to(device))
+            y_pred = model(fp, expr, mut, tgt)
             all_y.append(y.numpy())
             all_pred.append(y_pred.squeeze().cpu().numpy())
 
     y_true = np.concatenate(all_y) * y_std + y_mean
     y_pred = np.concatenate(all_pred) * y_std + y_mean
+    if save_path is not None:
+        # per-pair predictions, so the split can be re-scored on any compound subset
+        # (Table 1 mixes full-panel and subset-scored models; see scripts/align_gdsc_subset.py)
+        np.savez(save_path, y_true=y_true, y_pred=y_pred)
     return compute_metrics(y_true, y_pred), best_ep
 
+
+# ── Cross-dataset helpers ────────────────────────────────────────────────────
 def drug_based_train_val_split(sample_tbl, seed, val_frac=0.1):
-    """Drug-stratified 90/10 validation split, identical to the HDCA-Net cross mode."""
+    """The same drug-stratified 90/10 validation split used by HDCA-Net in cross mode."""
     drugs = np.array(sorted(sample_tbl["drug_name_lower"].unique()))
     rng   = np.random.default_rng(seed)
     n_val = max(1, int(len(drugs) * val_frac))
@@ -175,9 +199,10 @@ def drug_based_train_val_split(sample_tbl, seed, val_frac=0.1):
     va_idx = sample_tbl.index[sample_tbl["drug_name_lower"].isin(val_drugs)].values
     return tr_idx, va_idx
 
+
 def eval_external(model, eval_dir, drug_fp, num_genes,
-                  y_mean, y_std, device, log, save_path=None):
-    """Run inference only on an external dataset (CCLE / gCSI) and return metrics."""
+                  y_mean, y_std, device, log, save_path=None, drug_target=None):
+    """Run inference only on an external dataset (CCLE or gCSI) and return the metrics."""
     eval_path    = Path(eval_dir)
     sample_table = pd.read_csv(eval_path / "sample_table.csv")
     cell_expr    = np.load(eval_path / "cell_expr.npy")
@@ -194,16 +219,17 @@ def eval_external(model, eval_dir, drug_fp, num_genes,
 
     all_idx = np.arange(len(sample_table))
     ds = BaselineDataset(all_idx, sample_table, drug_fp, cell_expr, cell_mut,
-                         y_mean, y_std)
+                         y_mean, y_std, drug_target=drug_target)
     loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=False,
                         num_workers=NUM_WORKERS, pin_memory=True)
 
     model.eval()
     all_y, all_pred = [], []
     with torch.no_grad():
-        for fp, expr, mut, y in loader:
-            fp, expr, mut = fp.to(device), expr.to(device), mut.to(device)
-            y_pred = model(fp, expr, mut) if isinstance(model, DeepCDR) else model(fp, expr)
+        for fp, expr, mut, tgt, y in loader:
+            fp, expr, mut, tgt = (fp.to(device), expr.to(device), mut.to(device),
+                                  tgt.to(device))
+            y_pred = model(fp, expr, mut, tgt)
             all_y.append(y.numpy())
             all_pred.append(y_pred.squeeze().cpu().numpy())
 
@@ -211,7 +237,7 @@ def eval_external(model, eval_dir, drug_fp, num_genes,
     y_pred = np.concatenate(all_pred) * y_std + y_mean
     mask = np.isfinite(y_true) & np.isfinite(y_pred)
     if save_path is not None:
-
+        # dump the per-pair predictions in raw ln_ic50, for offline winsorizing and subsetting
         np.savez(save_path, y_true=y_true, y_pred=y_pred)
     m = compute_metrics(y_true[mask], y_pred[mask])
     m["dataset"]   = info.get("pset", eval_path.name)
@@ -219,6 +245,8 @@ def eval_external(model, eval_dir, drug_fp, num_genes,
     m["n_samples"] = int(len(sample_table))
     return m
 
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
 def setup_logger(log_path: str) -> logging.Logger:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     logger = logging.getLogger("baselines")
@@ -232,6 +260,8 @@ def setup_logger(log_path: str) -> logging.Logger:
     logger.addHandler(sh)
     return logger
 
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mat_dir",  default="data/matrices_gdsc12")
@@ -240,12 +270,19 @@ def main():
     parser.add_argument("--split",    default="random",
                         choices=["random", "drug", "cross"])
     parser.add_argument("--eval_dirs", nargs="+", default=None,
-                        help="cross mode only: external evaluation dataset directories")
+                        help="evaluation dataset directories; cross mode only")
     parser.add_argument("--gpu",      type=int, default=0)
     parser.add_argument("--eval_only", action="store_true",
-                        help="skip training, load cross_dataset/<model>/best.pt, evaluate and dump predictions (npz)")
+                        help="skip training, load cross_dataset/<model>/best.pt, evaluate and dump predictions")
+    parser.add_argument("--aux", default="none", choices=("none", "gated", "concat"),
+                        help="baseline-fairness control: give the baselines the drug--gene "
+                             "mask, either gating the expression (gated) or alone (concat)")
+    parser.add_argument("--drug_gene_file", default="hcdt_drug_gene_pruned.npy",
+                        help="mask used by --aux")
+    parser.add_argument("--mask_dropout", type=float, default=0.1,
+                        help="entry-wise mask dropout, matched to HDCA-Net")
     parser.add_argument("--seed", type=int, default=42,
-                        help="multi-seed reproduction: cross best.pt is isolated under seed<N>/, npz files share the model directory")
+                        help="for reproducibility across seeds: best.pt is isolated under seed<N>/ while the npz files share the model dir")
     args = parser.parse_args()
 
     global SEED
@@ -255,7 +292,7 @@ def main():
     log = setup_logger(log_path)
 
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
-    log.info(f"Device: {device}  |  log -> {log_path}")
+    log.info(f"Device: {device}  |  log → {log_path}")
 
     drug_fp, cell_expr, cell_mut, gene_pathway, sample_tbl = load_data(
         args.mat_dir, args.hcdt_dir)
@@ -263,6 +300,17 @@ def main():
     fp_dim         = drug_fp.shape[1]
     num_genes      = cell_expr.shape[1]
     gene_pathway_t = torch.from_numpy(gene_pathway).to(device)
+
+    # baseline-fairness control: the same drug--gene mask HDCA-Net receives
+    drug_target = None
+    if args.aux != "none":
+        drug_target = np.load(os.path.join(args.mat_dir, args.drug_gene_file))
+        nz = drug_target.sum(1) > 0
+        log.info(f"[aux={args.aux}] {args.drug_gene_file}: {int(nz.sum())}/{len(nz)} "
+                 f"compounds annotated, median {np.median(drug_target.sum(1)[nz]):.0f} genes, "
+                 f"mask dropout {args.mask_dropout}")
+        args.out_dir = f"{args.out_dir.rstrip('/')}_aux{args.aux}"
+        log.info(f"[aux] out_dir -> {args.out_dir}")
 
     log.info(f"drug_fp={drug_fp.shape}  cell_expr={cell_expr.shape}  "
              f"gene_pathway={gene_pathway.shape}")
@@ -279,23 +327,27 @@ def main():
 
         for mname in MODELS:
             set_seed(SEED)
-            model   = make_model(mname, fp_dim, num_genes, gene_pathway_t).to(device)
-            out_dir = os.path.join(args.out_dir, "random", mname)
+            model   = make_model(mname, fp_dim, num_genes, gene_pathway_t,
+                                 args.aux, args.mask_dropout).to(device)
+            out_dir = os.path.join(args.out_dir, "random", mname, f"seed{SEED}")
             t0      = time.time()
 
             tr_loader = make_loader(tr_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                    y_mean, y_std, shuffle=True)
+                                    y_mean, y_std, shuffle=True, drug_target=drug_target)
             va_loader = make_loader(va_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                    y_mean, y_std, shuffle=False)
+                                    y_mean, y_std, shuffle=False, drug_target=drug_target)
             te_loader = make_loader(te_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                    y_mean, y_std, shuffle=False)
+                                    y_mean, y_std, shuffle=False, drug_target=drug_target)
 
             m, best_ep = train_one(model, tr_loader, va_loader, te_loader,
-                                   device, out_dir, y_mean, y_std)
+                                   device, out_dir, y_mean, y_std,
+                                   save_path=os.path.join(out_dir, "pred.npz"),
+                                   eval_only=args.eval_only)
+            np.savez(os.path.join(out_dir, "test_idx.npz"), test_idx=np.asarray(te_idx))
             elapsed = time.time() - t0
             log.info(f"[{mname:10s}] RMSE={m['rmse']:.4f}  PCC={m['pcc']:.4f}  "
                      f"SCC={m['spearman']:.4f}  best_ep={best_ep}  ({elapsed/60:.1f}min)")
-            all_results.append({"split": "random", "model": mname,
+            all_results.append({"split": "random", "model": mname, "seed": SEED,
                                  "fold": "-", "best_ep": best_ep, **m})
 
     elif args.split == "cross":
@@ -311,16 +363,17 @@ def main():
 
         for mname in MODELS:
             set_seed(SEED)
-            model     = make_model(mname, fp_dim, num_genes, gene_pathway_t).to(device)
-            model_dir = os.path.join(args.out_dir, "cross_dataset", mname)
-            out_dir   = os.path.join(model_dir, f"seed{SEED}")
+            model     = make_model(mname, fp_dim, num_genes, gene_pathway_t,
+                                   args.aux, args.mask_dropout).to(device)
+            model_dir = os.path.join(args.out_dir, "cross_dataset", mname)   # npz files shared, since the aggregator globs per model dir
+            out_dir   = os.path.join(model_dir, f"seed{SEED}")               # best.pt isolated per seed, to avoid races
             os.makedirs(out_dir, exist_ok=True)
             t0 = time.time()
 
             tr_loader = make_loader(tr_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                    y_mean, y_std, shuffle=True)
+                                    y_mean, y_std, shuffle=True, drug_target=drug_target)
             va_loader = make_loader(va_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                    y_mean, y_std, shuffle=False)
+                                    y_mean, y_std, shuffle=False, drug_target=drug_target)
 
             if args.eval_only:
                 model.load_state_dict(torch.load(os.path.join(out_dir, "best.pt"),
@@ -328,7 +381,7 @@ def main():
                 log.info(f"  [eval_only] loaded {out_dir}/best.pt (training skipped)")
                 best_ep = -1
             else:
-
+                # train on GDSC1+2 (val for early stop); test loader = val (unused for metrics)
                 _, best_ep = train_one(model, tr_loader, va_loader, va_loader,
                                        device, out_dir, y_mean, y_std)
                 with open(os.path.join(out_dir, "train_stats.json"), "w") as f:
@@ -342,6 +395,7 @@ def main():
                 ds_tag = Path(eval_dir).name
                 m = eval_external(model, eval_dir, drug_fp, num_genes,
                                   y_mean, y_std, device, log,
+                                  drug_target=drug_target,
                                   save_path=os.path.join(model_dir, f"crosspred_{ds_tag}_seed{SEED}.npz"))
                 m.update({"model": mname, "best_epoch": best_ep})
                 ext_results.append(m)
@@ -355,7 +409,7 @@ def main():
                 json.dump(ext_results, f, indent=2)
             log.info(f"[{mname}] done ({(time.time()-t0)/60:.1f}min, best_ep={best_ep})")
 
-    else:
+    else:  # drug 5-fold
         log.info("=== Drug 5-fold ===")
         for mname in MODELS:
             fold_metrics = []
@@ -365,34 +419,39 @@ def main():
                 y_mean = float(sample_tbl.iloc[tr_idx]["ln_ic50"].mean())
                 y_std  = float(sample_tbl.iloc[tr_idx]["ln_ic50"].std())
 
-                model   = make_model(mname, fp_dim, num_genes, gene_pathway_t).to(device)
-                out_dir = os.path.join(args.out_dir, "drug_fold", mname, f"fold{fold+1}")
+                model   = make_model(mname, fp_dim, num_genes, gene_pathway_t,
+                                     args.aux, args.mask_dropout).to(device)
+                out_dir = os.path.join(args.out_dir, "drug_fold", mname, f"seed{SEED}", f"fold{fold+1}")
 
                 tr_loader = make_loader(tr_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                        y_mean, y_std, shuffle=True)
+                                        y_mean, y_std, shuffle=True, drug_target=drug_target)
                 va_loader = make_loader(va_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                        y_mean, y_std, shuffle=False)
+                                        y_mean, y_std, shuffle=False, drug_target=drug_target)
                 te_loader = make_loader(te_idx, sample_tbl, drug_fp, cell_expr, cell_mut,
-                                        y_mean, y_std, shuffle=False)
+                                        y_mean, y_std, shuffle=False, drug_target=drug_target)
 
                 m, best_ep = train_one(model, tr_loader, va_loader, te_loader,
-                                       device, out_dir, y_mean, y_std)
+                                       device, out_dir, y_mean, y_std,
+                                       save_path=os.path.join(out_dir, "pred.npz"),
+                                       eval_only=args.eval_only)
+                np.savez(os.path.join(out_dir, "test_idx.npz"), test_idx=np.asarray(te_idx))
                 fold_metrics.append(m)
-                all_results.append({"split": "drug_fold", "model": mname,
+                all_results.append({"split": "drug_fold", "model": mname, "seed": SEED,
                                     "fold": fold + 1, "best_ep": best_ep, **m})
                 log.info(f"[{mname:10s} fold{fold+1}] RMSE={m['rmse']:.4f}  "
                          f"PCC={m['pcc']:.4f}  SCC={m['spearman']:.4f}  (ep {best_ep})")
 
             df      = pd.DataFrame(fold_metrics)
             elapsed = time.time() - t0
-            log.info(f"[{mname} avg] RMSE={df['rmse'].mean():.4f}+/-{df['rmse'].std():.3f}  "
-                     f"PCC={df['pcc'].mean():.4f}+/-{df['pcc'].std():.3f}  "
+            log.info(f"[{mname} avg] RMSE={df['rmse'].mean():.4f}±{df['rmse'].std():.3f}  "
+                     f"PCC={df['pcc'].mean():.4f}±{df['pcc'].std():.3f}  "
                      f"({elapsed/60:.1f}min)")
 
     os.makedirs(args.out_dir, exist_ok=True)
-    out_csv = os.path.join(args.out_dir, f"results_{args.split}.csv")
+    out_csv = os.path.join(args.out_dir, f"results_{args.split}_seed{SEED}.csv")
     pd.DataFrame(all_results).to_csv(out_csv, index=False)
-    log.info(f"Saved -> {out_csv}")
+    log.info(f"Saved → {out_csv}")
+
 
 if __name__ == "__main__":
     main()

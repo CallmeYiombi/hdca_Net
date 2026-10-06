@@ -1,0 +1,40 @@
+# Unseen-drug split with the DIRECT-TARGET gene mask.
+#
+# Single factor: everything here is identical to configs/hdca_gdsc12.yaml, which produced
+# the published drug-5-fold numbers, except that the gene branch attends over the
+# direct-target mask instead of the broad HCDT one. The optimisation budget is left alone
+# on purpose -- the published drug5 runs stop at a mean best epoch of 10 out of 24 run, so
+# they are not budget-limited, and changing the schedule here would confound the mask with
+# the schedule.
+#
+# Hypothesis: the mask that recovers mechanism (Sec. "Mechanistic interpretability")
+# should also generalise better to compounds whose response was never observed, because it
+# tells the model which genes a novel compound actually acts on rather than diluting
+# attention over a few hundred. This has never been tested on the unseen-drug split; the
+# direct-target mask is used only for the cross-study runs.
+mat_dir: data/matrices_gdsc12
+hcdt_drug_gene_file: hcdt_drug_gene_pruned.npy
+out_dir: results/hdca_gdsc12_drug5_direct
+
+drug_enc_hidden: 512
+drug_enc_out: 256
+gate_mode: hard
+gate_gamma: 2.0
+fp_input_dropout: 0.0
+use_mutation: false
+dropout: 0.3
+lambda_neg: 0.1
+mask_dropout: 0.1
+
+seed: 42
+epochs: 150
+batch_size: 1024
+lr: 0.0003
+weight_decay: 0.00001
+lr_patience: 7
+early_stop: 30
+num_workers: 4
+
+ablation_epochs: 60
+ablation_early_stop: 15
+ablation_lr_patience: 5

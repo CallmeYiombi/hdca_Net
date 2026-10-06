@@ -1,7 +1,7 @@
-# Export sensitivity and expression tables from the downloaded PSets.
-#
-# Reads  data/pharmacodb/raw/<pset>/  and writes the per-dataset tables that
-# src/data/build_cross_eval_matrices.py turns into evaluation matrices.
+# scripts/extract_pharmacodb.R
+# 이미 다운로드된 PharmacoDB RDS 파일에서 CSV 추출
+# 입력: data/pharmacodb/psets/*.rds
+# 출력: data/pharmacodb/raw/{pset_name}/ 하위 CSV 파일들
 
 suppressPackageStartupMessages({
   library(PharmacoGx)
@@ -101,6 +101,7 @@ extract_drug_info <- function(pset, pset_dir, pset_name) {
 
   if (ok) return(TRUE)
 
+  # 구버전 PharmacoSet: @drug 슬롯
   drug_slot <- get_slot_safe(pset, "drug")
   ok <- write_slot_object(drug_slot, out_file, "drug_info.csv from @drug")
 
@@ -128,6 +129,7 @@ extract_cell_info <- function(pset, pset_dir, pset_name) {
 
   if (ok) return(TRUE)
 
+  # 구버전 PharmacoSet: @cell 슬롯
   cell_slot <- get_slot_safe(pset, "cell")
   ok <- write_slot_object(cell_slot, out_file, "cell_info.csv from @cell")
 
@@ -145,6 +147,7 @@ extract_sensitivity <- function(pset, pset_dir) {
 
   wrote_any <- FALSE
 
+  # 1차: PharmacoGx 공식 함수
   for (measure in measures) {
     ok <- tryCatch({
       summ <- summarizeSensitivityProfiles(
@@ -173,6 +176,7 @@ extract_sensitivity <- function(pset, pset_dir) {
 
   if (wrote_any) return(TRUE)
 
+  # 2차: @sensitivity 슬롯 직접 추출
   sens_slot <- get_slot_safe(pset, "sensitivity")
   if (is.null(sens_slot)) {
     cat("  [WARN] no @sensitivity slot\n")
@@ -183,6 +187,7 @@ extract_sensitivity <- function(pset, pset_dir) {
   cat("  [INFO] sensitivity slot class: ", paste(class(sens_slot), collapse = ", "), "\n")
   cat("  [INFO] sensitivity slot names: ", paste(names(sens_slot), collapse = ", "), "\n")
 
+  # sensitivity$profiles 형태가 가장 흔함
   if ("profiles" %in% names(sens_slot)) {
     prof <- sens_slot$profiles
 
@@ -199,6 +204,7 @@ extract_sensitivity <- function(pset, pset_dir) {
     }
   }
 
+  # raw sensitivity slot 자체도 저장 시도
   if (!wrote_any) {
     ok <- write_slot_object(sens_slot, file.path(pset_dir, "sensitivity_raw.csv"), "sensitivity_raw.csv")
     if (ok) wrote_any <- TRUE
@@ -388,4 +394,4 @@ for (rds_path in rds_files) {
 
 cat("\n=== Extraction complete ===\n")
 cat(sprintf("Output: %s\n", OUT_DIR))
-cat("Next: python src/data/build_cross_eval_matrices.py\n")
+cat("Next: python src/data/build_pharmacodb_matrices.py\n")

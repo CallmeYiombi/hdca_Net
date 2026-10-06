@@ -24,6 +24,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit import DataStructs
 
+
 def morgan_bits(smiles: str, radius: int, n_bits: int):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -33,18 +34,20 @@ def morgan_bits(smiles: str, radius: int, n_bits: int):
     DataStructs.ConvertToNumpyArray(fp, arr)
     return arr
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mat_dir", default="data/matrices_gdsc12")
-    ap.add_argument("--radius", type=int, default=2)
+    ap.add_argument("--radius", type=int, default=2)      # ECFP4
     ap.add_argument("--n_bits", type=int, default=2048)
     args = ap.parse_args()
 
     smiles_csv = os.path.join(args.mat_dir, "drug_smiles.csv")
     fp_path = os.path.join(args.mat_dir, "drug_fp.npy")
     if not os.path.exists(smiles_csv):
-        raise SystemExit(f"{smiles_csv} not found -- run build_drug_graphs.py first")
+        raise SystemExit(f"{smiles_csv} not found — run build_drug_graphs.py first")
 
+    # size the array from the existing drug_fp if present, else from sample_table
     if os.path.exists(fp_path):
         n_drugs = np.load(fp_path).shape[0]
     else:
@@ -79,6 +82,7 @@ def main():
     print(f"nonzero fingerprints: {nonzero}/{n_drugs}  (resolved SMILES: {ok})")
     if bad:
         print(f"still empty ({len(bad)}): {bad[:20]}{' ...' if len(bad) > 20 else ''}")
+
 
 if __name__ == "__main__":
     main()

@@ -1,11 +1,12 @@
 """
-Split strategies for HDCA-Net.
+Split strategies for PG-HCPNet.
 All return (train_idx, val_idx, test_idx) as numpy arrays of row indices
 into sample_table.
 """
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold
+
 
 def random_split(sample_table: pd.DataFrame, seed: int = 42,
                  val_ratio: float = 0.1, test_ratio: float = 0.1):
@@ -19,6 +20,7 @@ def random_split(sample_table: pd.DataFrame, seed: int = 42,
     train_idx = idx[n_test + n_val:]
     return train_idx, val_idx, test_idx
 
+
 def drug_kfold(sample_table: pd.DataFrame, n_splits: int = 5, seed: int = 42):
     """Yields (train_idx, val_idx, test_idx) for each fold.
     test drugs are the held-out fold; val drugs are a random 10% of train drugs.
@@ -29,6 +31,7 @@ def drug_kfold(sample_table: pd.DataFrame, n_splits: int = 5, seed: int = 42):
         test_drugs  = set(drugs[te_d_idx])
         train_drugs = set(drugs[tr_d_idx])
 
+        # split a val set from train drugs (10%)
         rng = np.random.default_rng(seed + fold)
         tr_drug_arr = np.array(sorted(train_drugs))
         n_val_d = max(1, int(len(tr_drug_arr) * 0.1))
@@ -39,6 +42,7 @@ def drug_kfold(sample_table: pd.DataFrame, n_splits: int = 5, seed: int = 42):
         val_idx   = sample_table.index[sample_table["drug_name_lower"].isin(val_drug_set)].values
         test_idx  = sample_table.index[sample_table["drug_name_lower"].isin(test_drugs)].values
         yield fold, train_idx, val_idx, test_idx
+
 
 def cell_split(sample_table: pd.DataFrame, seed: int = 42,
                val_ratio: float = 0.1, test_ratio: float = 0.2):
@@ -56,11 +60,12 @@ def cell_split(sample_table: pd.DataFrame, seed: int = 42,
     test_idx  = sample_table.index[sample_table["cell_line_id"].isin(test_cells)].values
     return train_idx, val_idx, test_idx
 
+
 def loto_split(sample_table: pd.DataFrame, target_drug: str):
     """Leave-one-target-out: one drug is held out as test."""
     test_idx  = sample_table.index[sample_table["drug_name_lower"] == target_drug.lower()].values
     train_idx = sample_table.index[sample_table["drug_name_lower"] != target_drug.lower()].values
-
+    # small random val from train
     rng = np.random.default_rng(42)
     n_val = max(1, int(len(train_idx) * 0.05))
     val_mask = rng.choice(len(train_idx), n_val, replace=False)

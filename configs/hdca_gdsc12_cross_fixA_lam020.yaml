@@ -1,10 +1,11 @@
-# Broad mask, diversity weight 0.2 (weight-matched control).
 mat_dir: data/matrices_gdsc12
 out_dir: results/hdca_gdsc12_fixA_lam020
 
+# Validation split for cross mode: drug | random | cell
 val_strategy: random
 val_frac: 0.1
 
+# Model — HDCA-Net (Hierarchical Drug-Cell Cross-Alignment)
 drug_enc_hidden: 512
 drug_enc_out: 256
 gate_mode: hard
@@ -15,8 +16,10 @@ dropout: 0.3
 lambda_neg: 0.1
 mask_dropout: 0.1
 
+# Fix A sweep — diversity weight 0.2
 lambda_align_div: 0.2
 
+# Training
 seed: 42
 epochs: 120
 batch_size: 1024
@@ -26,8 +29,13 @@ lr_patience: 15
 early_stop: 80
 num_workers: 4
 
+# Cross-eval hook
 cross_hook_every: 5
 
+# Ablation (kept for compatibility)
 ablation_epochs: 60
 ablation_early_stop: 15
 ablation_lr_patience: 5
+
+# GPU
+cuda_device: 4

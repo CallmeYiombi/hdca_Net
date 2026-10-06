@@ -1,10 +1,13 @@
-# Download the CCLE and gCSI PSets from PharmacoDB and export their contents as CSV.
+# PharmacoDB / PharmacoGx 로컬 RDS 파일 기반 CSV export
 #
-# Downloads to  data/pharmacodb/psets/*.rds
-# Writes tables to  data/pharmacodb/raw/<pset>/
+# 입력:
+#   data/pharmacodb/psets/*.rds
 #
-# Run scripts/extract_pharmacodb.R next to assemble the sensitivity and
-# expression tables used by src/data/build_cross_eval_matrices.py.
+# 출력:
+#   data/pharmacodb/raw/{PSet Name}/ 하위 CSV 파일들
+#
+# 실행:
+#   Rscript scripts/export_pharmacodb_from_local_rds.R
 
 library(PharmacoGx)
 library(data.table)
@@ -27,6 +30,7 @@ flatten_df <- function(df) {
   df
 }
 
+# check_pharmacodb_urls.R에서 생성되는 파일명 규칙과 맞춤
 # PSet Name -> local RDS filename
 PSET_FILES <- list(
   "CCLE_2015"         = "CCLE_2015.rds",
@@ -67,21 +71,21 @@ for (pset_name in target_names) {
     cat(sprintf("  Reading: %s\n", rds_path))
     pset <- readRDS(rds_path)
 
-    # -- 1. Drug info -----------------------------------------------------
+    # ── 1. Drug info ─────────────────────────────────────────────────────
     cat("  Exporting drug info...\n")
     drug_df      <- flatten_df(as.data.frame(drugInfo(pset)))
     drug_df$pset <- pset_name
     fwrite(drug_df, file.path(pset_dir, "drug_info.csv"))
     cat(sprintf("    %d drugs\n", nrow(drug_df)))
 
-    # -- 2. Cell line info ------------------------------------------------
+    # ── 2. Cell line info ────────────────────────────────────────────────
     cat("  Exporting cell info...\n")
     cell_df      <- flatten_df(as.data.frame(cellInfo(pset)))
     cell_df$pset <- pset_name
     fwrite(cell_df, file.path(pset_dir, "cell_info.csv"))
     cat(sprintf("    %d cell lines\n", nrow(cell_df)))
 
-    # -- 3. Drug sensitivity ----------------------------------------------
+    # ── 3. Drug sensitivity ──────────────────────────────────────────────
     measures <- sensitivityMeasures(pset)
     cat(sprintf("  Available sensitivity measures: %s\n",
                 paste(measures, collapse = ", ")))
@@ -119,13 +123,13 @@ for (pset_name in target_names) {
           out_f <- file.path(pset_dir, sprintf("sensitivity_%s.csv", measure))
           fwrite(summ_df, out_f)
 
-          cat(sprintf("    Saved: %d drugs x %d cells -> %s\n",
+          cat(sprintf("    Saved: %d drugs × %d cells -> %s\n",
                       nrow(summ_df), ncol(summ_df) - 1, basename(out_f)))
         }
       }
     }
 
-    # -- 4. Molecular profiles --------------------------------------------
+    # ── 4. Molecular profiles 확인 ───────────────────────────────────────
     cat("  Checking molecular profiles...\n")
 
     mol_types <- tryCatch(
@@ -138,7 +142,7 @@ for (pset_name in target_names) {
 
     cat(sprintf("  Molecular types: %s\n", paste(mol_types, collapse = ", ")))
 
-    # -- 5. Gene Expression -----------------------------------------------
+    # ── 5. Gene Expression ───────────────────────────────────────────────
     expr_candidates <- c(
       "rna",
       "rnaseq",
@@ -181,7 +185,7 @@ for (pset_name in target_names) {
           )
 
           if (!is.null(expr_mat)) {
-            cat(sprintf("    Matrix: %d genes x %d cells\n",
+            cat(sprintf("    Matrix: %d genes × %d cells\n",
                         nrow(expr_mat), ncol(expr_mat)))
 
             expr_df           <- flatten_df(as.data.frame(t(expr_mat)))
@@ -202,7 +206,7 @@ for (pset_name in target_names) {
       cat("  No expression profile exported.\n")
     }
 
-    # -- 6. Mutation ------------------------------------------------------
+    # ── 6. Mutation ──────────────────────────────────────────────────────
     mutation_candidates <- c(
       "mutation",
       "mutation.snp",
@@ -247,7 +251,7 @@ for (pset_name in target_names) {
             fwrite(mut_df, file.path(pset_dir, "mutation.csv"))
             writeLines(mol_type, file.path(pset_dir, "mutation_mol_type.txt"))
 
-            cat(sprintf("    Saved mutation.csv: %d cells x %d genes\n",
+            cat(sprintf("    Saved mutation.csv: %d cells × %d genes\n",
                         nrow(mut_df), ncol(mut_df) - 1))
             mut_saved <- TRUE
             break
@@ -269,4 +273,4 @@ for (pset_name in target_names) {
 
 cat("\n=== Export complete ===\n")
 cat(sprintf("Output: %s\n", OUT_DIR))
-cat("Next: Rscript scripts/extract_pharmacodb.R\n")
+cat("Next: python src/data/build_pharmacodb_matrices.py\n")

@@ -1,23 +1,37 @@
-"""Cross-study evaluation table with winsorized targets.
+"""
+Cross-study table with winsorization, across all models.
 
-Collects the per-pair predictions dumped by each model (crosspred_*.npz) and DRPreter's
-pred.csv, winsorizes the external log-IC50 targets at the GDSC training support cap and
-recomputes PCC, SCC, RMSE and MAE. With --subset every model is restricted to the
-(drug, cell) pairs DRPreter covers, so all rows are scored on an identical test set.
+Collects the per-pair predictions each model's eval_only run dumps into its out_dir
+(crosspred_*.npz) together with DRPreter's pred.csv, winsorizes y_true at the GDSC training
+support, and recomputes PCC/SCC/RMSE/MAE. The raw values are printed alongside so the size
+of the extrapolation artifact is visible.
 
-Usage:
-  python src/analysis/winsorize_cross_table.py --model_dirs <dir> [<dir> ...] \
-      [--drpreter_dir <dir>] [--subset] --cap 13.82 --out results/cross_table.csv
+Input conventions:
+  - model dumps: <model_dir>/crosspred_<dsname>_seed<seed>.npz (keys: y_true, y_pred; raw ln_ic50);
+                 the cohort is inferred from 'ccle'/'gcsi' in the name
+  - DRPreter  : <drpreter_dir>/cross_<CCLE|gCSI>_seed<seed>_pred.csv (columns: y_true, y_pred)
+
+Usage (from the project root):
+  python src/analysis/winsorize_cross_table.py \
+    --model_dirs \
+       results/hdca_gdsc12_diag2/cross_dataset/gene_pathway \
+       results/baselines/cross_dataset/GraphDRP \
+       results/baselines/cross_dataset/DeepCDR \
+       results/baselines/cross_dataset/TGSA \
+       results/baselines/cross_dataset/PANCDR \
+    --drpreter_dir DRPreter-main/Result_HDCA \
+    --cap 13.82 --out results/cross_winsorized_table.csv
 """
 import os, re, glob, argparse
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 
+
 def metrics(y_true, y_pred, cap=None):
     yt = np.asarray(y_true, float); yp = np.asarray(y_pred, float)
     if cap is not None:
-        yt = np.minimum(yt, cap)
+        yt = np.minimum(yt, cap)          # cap the targets only
     m = np.isfinite(yt) & np.isfinite(yp)
     yt, yp = yt[m], yp[m]
     return dict(n=int(m.sum()),
@@ -26,17 +40,20 @@ def metrics(y_true, y_pred, cap=None):
                 RMSE=float(np.sqrt(np.mean((yt - yp) ** 2))),
                 MAE=float(np.mean(np.abs(yt - yp))))
 
+
 def which_cset(name):
     n = name.lower()
     if "ccle" in n:  return "CCLE"
     if "gcsi" in n:  return "gCSI"
     return None
 
+
 def model_name(d):
     b = os.path.basename(os.path.normpath(d))
     if b in ("gene_pathway", "both") or "hdca" in d.lower():
         return "HDCA"
     return b
+
 
 def collect_npz(model_dirs):
     """(model, cset) -> list of (y_true, y_pred) per seed."""
@@ -47,10 +64,11 @@ def collect_npz(model_dirs):
         for f in files:
             cset = which_cset(os.path.basename(f))
             if cset is None:
-                print(f"  [skip] could not infer dataset from {f}"); continue
+                print(f"  [skip] cohort could not be inferred: {f}"); continue
             z = np.load(f)
             rows.setdefault((mdl, cset), []).append((z["y_true"], z["y_pred"]))
     return rows
+
 
 def collect_drpreter(drp_dir):
     rows = {}
@@ -61,13 +79,15 @@ def collect_drpreter(drp_dir):
                 (df["y_true"].values, df["y_pred"].values))
     return rows
 
+
 def load_ref_pairs(ic_path):
-    """Read the (cell, drug) pairs DRPreter evaluates from IC_<dataset>.csv."""
+    """The shared (cell, drug) pair set, read from DRPreter's IC_<dataset>.csv."""
     df = pd.read_csv(ic_path)
     return set(zip(df["DepMap_ID"].astype(str), df["Drug name"].astype(str)))
 
+
 def build_masks(subset_specs):
-    """Build a boolean mask per dataset, in sample-table row order."""
+    """{cohort: (sample_table_path, ic_path)} -> {cohort: bool mask in sample_table row order}."""
     masks = {}
     for cset, (st_path, ic_path) in subset_specs.items():
         ref = load_ref_pairs(ic_path)
@@ -75,12 +95,14 @@ def build_masks(subset_specs):
         pairs = list(zip(st["model_id"].astype(str), st["drug_name"].astype(str)))
         mask = np.array([p in ref for p in pairs], dtype=bool)
         masks[cset] = mask
-        print(f"  [subset] {cset}: sample table {len(mask)} rows -> {int(mask.sum())} shared "
+        print(f"  [subset] {cset}: sample_table {len(mask)} rows -> {int(mask.sum())} shared "
               f"(DRPreter set {len(ref)})")
     return masks
 
+
 def apply_masks(rows, masks):
-    """Restrict every model except DRPreter to the shared pairs (npz rows follow the sample table)."""
+    """Filter every model except DRPreter, which defines the set, to the shared pairs.
+    npz row order equals sample_table row order."""
     out = {}
     for (mdl, cset), seeds in rows.items():
         if mdl == "DRPreter" or cset not in masks:
@@ -90,13 +112,14 @@ def apply_masks(rows, masks):
         new = []
         for yt, yp in seeds:
             if len(yt) != len(m):
-                print(f"  [subset][warn] {mdl}/{cset}: npz len {len(yt)} != mask len {len(m)} "
-                      f"-> skipping the mask (row alignment mismatch)")
+                print(f"  [subset][warn] {mdl}/{cset}: npz len {len(yt)} ≠ mask len {len(m)} "
+                      f"-> skipping the mask and using the full set; row alignment is suspect")
                 new.append((yt, yp))
             else:
                 new.append((yt[m], yp[m]))
         out[(mdl, cset)] = new
     return out
+
 
 def summarize(rows, cap):
     out = []
@@ -112,6 +135,7 @@ def summarize(rows, cap):
         ))
     return pd.DataFrame(out)
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_dirs", nargs="+", required=True)
@@ -119,18 +143,18 @@ def main():
     ap.add_argument("--cap", type=float, default=13.82)
     ap.add_argument("--out", default="results/cross_winsorized_table.csv")
     ap.add_argument("--subset", action="store_true",
-                    help="restrict every model to the pairs shared with DRPreter")
+                    help="align every model to the pairs DRPreter covers before recomputing")
     ap.add_argument("--matrices_root", default="data",
-                    help="parent directory of the per-dataset sample tables")
+                    help="parent of matrices_ccle_2015 / matrices_gcsi_2019")
     ap.add_argument("--drpreter_ic_dir", default="DRPreter-main/Data_HDCA",
-                    help="directory holding DRPreter's IC_CCLE.csv / IC_gCSI.csv")
+                    help="where DRPreter's IC_CCLE.csv / IC_gCSI.csv live; they define the shared pairs")
     args = ap.parse_args()
 
     rows = collect_npz(args.model_dirs)
     if args.drpreter_dir:
         rows.update(collect_drpreter(args.drpreter_dir))
     if not rows:
-        raise SystemExit("No crosspred_*.npz found; check the paths or run the models with --eval_only.")
+        raise SystemExit("no crosspred files found; check the paths and that eval_only was run.")
 
     order = {"HDCA": 0, "DRPreter": 1, "PANCDR": 2, "DeepCDR": 3, "GraphDRP": 4, "TGSA": 5}
     pd.set_option("display.width", 160, "display.max_columns", 20)
@@ -149,12 +173,14 @@ def main():
                 print(f"\n===== cross_{cset}  {title}  (cap={args.cap}) =====")
                 print(sub[cols].to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
+    # 1) full native test set
     df = _order_sort(summarize(rows, args.cap))
     _print(df, "[FULL native test]")
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     df.to_csv(args.out, index=False)
     print(f"\nsaved: {args.out}")
 
+    # 2) aligned to the pairs DRPreter covers
     if args.subset:
         print("\n" + "=" * 70)
         subset_specs = {
@@ -165,13 +191,14 @@ def main():
         }
         masks   = build_masks(subset_specs)
         df_sub  = _order_sort(summarize(apply_masks(rows, masks), args.cap))
-        _print(df_sub, "[SUBSET: pairs shared with DRPreter]")
+        _print(df_sub, "[ALIGNED to the pairs DRPreter covers]")
         sub_out = args.out.replace(".csv", "_subset.csv")
         df_sub.to_csv(sub_out, index=False)
         print(f"\nsaved: {sub_out}")
 
-    print("\nNote: raw = no cap applied; win = winsorized. FULL uses each model's native\n"
-          "test set, SUBSET the pairs shared with DRPreter.")
+    print("\nraw = no cap, win = winsorized. FULL uses each model's native test set; "
+          "SUBSET restricts every model to the pairs DRPreter covers.")
+
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,21 @@
-"""Build the GDSC1+GDSC2 training matrices.
+"""
+Builder for the combined GDSC1+GDSC2 matrices.
 
-Merges the two GDSC releases, matches drug and cell-line identifiers, and writes the sample
-table together with the expression, fingerprint and HCDT prior matrices.
+Inputs:
+  data/GDSC1_fitted_dose_response_27Oct23.xlsx
+  data/GDSC2_fitted_dose_response_27Oct23.xlsx
+  data/Model.csv                  (SangerModelID → DepMap ModelID)
+  data/OmicsExpressionTPMLogp1.csv
+  data/OmicsSomaticMutationsMatrixDamaging.csv
+  data/HCDT2.0/                   (drug-target knowledge)
+
+Output: data/matrices_gdsc12/
+  sample_table.csv, drug_fp.npy, cell_expr.npy, cell_mut.npy,
+  hcdt_drug_gene.npy, hcdt_drug_rna.npy, hcdt_drug_path_direct.npy,
+  hcdt_neg_drug_gene.npy, gene_pathway.npy, rna_gene.npy, id_maps.json
+
+Usage:
+  python src/data/build_gdsc12_matrices.py
 """
 import os, sys, json, re, warnings
 import numpy as np
@@ -25,6 +39,9 @@ except ImportError:
     print("[WARN] RDKit not found: pip install rdkit")
     RDKIT = False
 
+
+# -- utilities ---------------------------------------------------------------
+
 def normalize_drug_name(name: str) -> str:
     name = str(name).lower().strip()
     name = re.sub(r'\s*\(.*?\)', '', name)
@@ -44,24 +61,31 @@ def smiles_to_fp(smiles: str, radius: int = 2, nbits: int = 2048):
     DataStructs.ConvertToNumpyArray(fp, arr)
     return arr
 
+
+# -- Step 1: merge the sensitivity data (GDSC1 + GDSC2) ----------------------
+
 print("[1] Loading GDSC1 + GDSC2 dose-response data...")
 g1 = pd.read_excel(DATA / "GDSC1_fitted_dose_response_27Oct23.xlsx")
 g2 = pd.read_excel(DATA / "GDSC2_fitted_dose_response_27Oct23.xlsx")
 print(f"  GDSC1: {len(g1):,} rows  ({g1['DRUG_NAME'].nunique()} drugs, {g1['CELL_LINE_NAME'].nunique()} cells)")
 print(f"  GDSC2: {len(g2):,} rows  ({g2['DRUG_NAME'].nunique()} drugs, {g2['CELL_LINE_NAME'].nunique()} cells)")
 
+# for duplicate drug-cell pairs prefer GDSC2, the newer protocol
 gdsc = pd.concat([g1, g2], ignore_index=True)
 gdsc["_key"] = gdsc["DRUG_NAME"].str.lower().str.strip() + "||" + gdsc["CELL_LINE_NAME"].str.strip()
-gdsc = gdsc.sort_values("DATASET", ascending=False)
+gdsc = gdsc.sort_values("DATASET", ascending=False)   # GDSC2 > GDSC1
 gdsc = gdsc.drop_duplicates("_key", keep="first").drop(columns="_key")
 gdsc = gdsc[gdsc["LN_IC50"].notna()].reset_index(drop=True)
 print(f"  Combined (dedup, GDSC2 priority): {len(gdsc):,} rows  "
       f"({gdsc['DRUG_NAME'].nunique()} drugs, {gdsc['CELL_LINE_NAME'].nunique()} cells)")
 
-print("\n[2] Mapping SangerModelID -> DepMap ModelID...")
+
+# -- Step 2: map Sanger IDs to DepMap ModelID --------------------------------
+
+print("\n[2] Mapping SangerModelID → DepMap ModelID...")
 model_df = pd.read_csv(DATA / "Model.csv")
 sanger_to_model = dict(zip(model_df["SangerModelID"], model_df["ModelID"]))
-
+# fall back to StrippedCellLineName when the Sanger ID is missing
 stripped_to_model = dict(zip(
     model_df["StrippedCellLineName"].str.upper(),
     model_df["ModelID"]
@@ -79,26 +103,32 @@ matched = gdsc["ModelID"].notna().sum()
 print(f"  Matched: {matched:,}/{len(gdsc):,} rows ({100*matched/len(gdsc):.1f}%)")
 gdsc = gdsc[gdsc["ModelID"].notna()].copy()
 
+
+# -- Step 3: load the expression matrix and define the cell-line universe ----
+
 print("\n[3] Loading DepMap expression data...")
 expr_raw = pd.read_csv(DATA / "OmicsExpressionTPMLogp1.csv", low_memory=False)
 
+# default-profile filter (IsDefaultEntryForModel), tolerant of the value format
 if "IsDefaultEntryForModel" in expr_raw.columns:
     col = expr_raw["IsDefaultEntryForModel"]
     mask = col.astype(str).str.upper().isin({"YES", "TRUE", "1"})
     filtered = expr_raw[mask]
-
+    # if the filter leaves nothing, ignore the column and keep everything
     expr_raw = filtered.copy() if len(filtered) > 0 else expr_raw.copy()
     print(f"  IsDefaultEntryForModel filter: {len(filtered)} rows (fallback={'yes' if len(filtered)==0 else 'no'})")
 expr_raw = expr_raw.drop_duplicates("ModelID", keep="first")
 expr_raw = expr_raw.set_index("ModelID")
 
+# gene columns are formatted as "SYMBOL (ENTREZ_ID)"
 meta_cols = {"Unnamed: 0", "SequencingID", "ModelID", "IsDefaultEntryForModel",
              "ModelConditionID", "IsDefaultEntryForMC"}
 gene_cols = [c for c in expr_raw.columns if c not in meta_cols and "(" in c]
 expr_raw  = expr_raw[gene_cols].astype(np.float32)
 
-print(f"  Expression: {expr_raw.shape[0]} cells x {len(gene_cols)} genes")
+print(f"  Expression: {expr_raw.shape[0]} cells × {len(gene_cols)} genes")
 
+# cell-line universe: the intersection of the GDSC12 data and DepMap
 gdsc_model_ids = set(gdsc["ModelID"].unique())
 common_cells   = sorted(gdsc_model_ids & set(expr_raw.index))
 print(f"  GDSC12 unique ModelIDs: {len(gdsc_model_ids)}")
@@ -117,6 +147,7 @@ for i, g in enumerate(gene_cols):
     sym = g.split(" (")[0].upper()
     gene_symbol_to_gidx[sym] = i
 
+# assemble the expression matrix
 print("  Building cell_expr matrix (z-score)...")
 cell_expr_df = expr_raw.reindex(common_cells).fillna(0).astype(np.float32)
 cell_expr = cell_expr_df.values
@@ -124,6 +155,9 @@ gene_std = cell_expr.std(axis=0)
 gene_std[gene_std == 0] = 1.0
 cell_expr = (cell_expr - cell_expr.mean(axis=0)) / gene_std
 print(f"  cell_expr: {cell_expr.shape}")
+
+
+# -- Step 4: mutation matrix -------------------------------------------------
 
 print("\n[4] Building mutation matrix...")
 mut_raw = pd.read_csv(DATA / "OmicsSomaticMutationsMatrixDamaging.csv", low_memory=False)
@@ -153,8 +187,13 @@ for cell_id in common_cells:
     mut_covered += 1
 print(f"  cell_mut: {cell_mut.shape}  (covered {mut_covered}/{num_cells} cells)")
 
+
+# -- Step 5: compound universe and fingerprints ------------------------------
+
 print("\n[5] Building drug universe & fingerprints...")
 
+# compound name -> SMILES: taken from the HCDT drug-gene table or resolved through PubChem CID.
+# The GDSC xlsx files carry no SMILES, so they come from the GDSC2 pharmacodb raw export.
 drug_smiles = {}
 gdsc2_drug_file = DATA / "pharmacodb" / "raw" / "GDSC_2020_v2-8_2_" / "drug_info.csv"
 if gdsc2_drug_file.exists():
@@ -166,12 +205,14 @@ if gdsc2_drug_file.exists():
             drug_smiles[normalize_drug_name(row[name_col])] = str(row[smiles_col])
     print(f"  SMILES loaded from GDSC2 pharmacodb: {len(drug_smiles)} drugs")
 
+# compound universe
 drug_names = sorted(gdsc["DRUG_NAME"].str.strip().unique())
 drug_to_didx  = {d: i for i, d in enumerate(drug_names)}
 drug_norm_map = {normalize_drug_name(d): i for d, i in drug_to_didx.items()}
 num_drugs = len(drug_names)
 print(f"  Drug universe: {num_drugs} drugs")
 
+# fingerprint matrix
 drug_fp = np.zeros((num_drugs, 2048), dtype=np.float32)
 fp_found = 0
 for drug_name, d_idx in drug_to_didx.items():
@@ -181,6 +222,9 @@ for drug_name, d_idx in drug_to_didx.items():
         drug_fp[d_idx] = fp
         fp_found += 1
 print(f"  FP computed: {fp_found}/{num_drugs} ({100*fp_found/num_drugs:.1f}%)")
+
+
+# -- Step 6: build sample_table ----------------------------------------------
 
 print("\n[6] Building sample_table...")
 gdsc["drug_idx"] = gdsc["DRUG_NAME"].str.strip().map(drug_to_didx)
@@ -202,12 +246,16 @@ print(f"  sample_table: {len(sample_table):,} samples  "
       f"({sample_table['drug_idx'].nunique()} drugs, {sample_table['cell_idx'].nunique()} cells)")
 print(f"  By dataset: {sample_table['dataset'].value_counts().to_dict()}")
 
+
+# -- Step 7: HCDT matrices ---------------------------------------------------
+
 print("\n[7] Building HCDT matrices...")
 
 def hcdt_didx(hcdt_name):
     norm = normalize_drug_name(hcdt_name)
     return drug_norm_map.get(norm)
 
+# 7a. gene_pathway
 print("  gene_pathway...")
 pg = pd.read_excel(HCDT / "Pathway_Gene.xlsx")
 pg["path_clean"] = pg["PATH_NAME"].str.strip()
@@ -226,6 +274,7 @@ for _, row in pg.iterrows():
             gene_pathway[g_idx, p_idx] = 1.0
 print(f"    gene_pathway: {gene_pathway.shape}")
 
+# 7b. hcdt_drug_gene
 print("  hcdt_drug_gene...")
 dg = pd.read_csv(HCDT / "DRUG_GENE" / "DRUG-GENE.tsv", sep="\t")
 hcdt_drug_gene = np.zeros((num_drugs, num_genes), dtype=np.float32)
@@ -237,6 +286,7 @@ for _, row in dg.iterrows():
 cov = (hcdt_drug_gene.sum(axis=1) > 0).sum()
 print(f"    HCDT name-match coverage: {cov}/{num_drugs} drugs ({100*cov/num_drugs:.1f}%)")
 
+# 7b-aug. fill compounds with no coverage from the GDSC PUTATIVE_TARGET annotation
 print("  hcdt_drug_gene augmentation (GDSC PUTATIVE_TARGET)...")
 
 GENE_ALIASES = {
@@ -278,6 +328,7 @@ cov = (hcdt_drug_gene.sum(axis=1) > 0).sum()
 print(f"    augmented {aug_drugs} drugs (+{aug_entries} drug-gene entries)")
 print(f"    final coverage: {cov}/{num_drugs} drugs ({100*cov/num_drugs:.1f}%)")
 
+# 7b-cid. additional matching through PubChem CID, when the cache file is present
 CID_CACHE = DATA / "pubchem_cid_cache.json"
 if CID_CACHE.exists():
     print("  hcdt_drug_gene PubChem CID augmentation...")
@@ -304,10 +355,24 @@ if CID_CACHE.exists():
                 hcdt_drug_gene[d_idx, g_idx] = 1.0
                 cid_added += 1
     cov = (hcdt_drug_gene.sum(axis=1) > 0).sum()
-    print(f"    CID augmentation: +{cid_added} entries -> {cov}/{num_drugs} ({100*cov/num_drugs:.1f}%)")
+    print(f"    CID augmentation: +{cid_added} entries → {cov}/{num_drugs} ({100*cov/num_drugs:.1f}%)")
 else:
-    print("  [skip] no PubChem CID cache; drug-gene coverage stays at the name-matched set")
+    print("  [skip] PubChem CID cache not found. Run: python src/data/fetch_pubchem_cids.py")
 
+# 7c. LINCS drug-induced gene expression placeholder
+# lincs_drug_gene.npy: (num_drugs, num_genes)
+# the real LINCS data overwrites this once build_lincs_matrices.py has run
+print("  lincs_drug_gene (placeholder)...")
+lincs_path = OUT / "lincs_drug_gene.npy"
+if lincs_path.exists():
+    lincs_drug_gene = np.load(lincs_path)
+    cov = (lincs_drug_gene.sum(axis=1) > 0).sum()
+    print(f"    loaded existing lincs_drug_gene: {lincs_drug_gene.shape}, coverage {cov}/{num_drugs}")
+else:
+    lincs_drug_gene = np.zeros((num_drugs, num_genes), dtype=np.float32)
+    print(f"    placeholder zeros {lincs_drug_gene.shape} — run build_lincs_matrices.py for real data")
+
+# 7d. hcdt_drug_path_direct
 print("  hcdt_drug_path_direct...")
 dp = pd.read_excel(HCDT / "DRUG_PATHWAY" / "Drug-Pathway.xlsx")
 hcdt_drug_path_direct = np.zeros((num_drugs, num_pathways), dtype=np.float32)
@@ -319,6 +384,7 @@ for _, row in dp.iterrows():
 cov = (hcdt_drug_path_direct.sum(axis=1) > 0).sum()
 print(f"    Pathway coverage: {cov}/{num_drugs} drugs ({100*cov/num_drugs:.1f}%)")
 
+# 7e. hcdt_neg_drug_gene
 print("  hcdt_neg_drug_gene...")
 neg = pd.read_excel(HCDT / "negative DTIs.xlsx")
 hcdt_neg_drug_gene = np.zeros((num_drugs, num_genes), dtype=np.float32)
@@ -330,11 +396,15 @@ for _, row in neg.iterrows():
 cov = (hcdt_neg_drug_gene.sum(axis=1) > 0).sum()
 print(f"    Neg DTI coverage: {cov}/{num_drugs} drugs ({100*cov/num_drugs:.1f}%)")
 
+
+# -- Step 8: save ------------------------------------------------------------
+
 print("\n[8] Saving to", OUT)
 np.save(OUT / "drug_fp.npy",               drug_fp)
 np.save(OUT / "cell_expr.npy",             cell_expr)
 np.save(OUT / "cell_mut.npy",              cell_mut)
 np.save(OUT / "hcdt_drug_gene.npy",        hcdt_drug_gene)
+np.save(OUT / "lincs_drug_gene.npy",       lincs_drug_gene)
 np.save(OUT / "hcdt_drug_path_direct.npy", hcdt_drug_path_direct)
 np.save(OUT / "hcdt_neg_drug_gene.npy",    hcdt_neg_drug_gene)
 np.save(OUT / "gene_pathway.npy",          gene_pathway)
@@ -358,7 +428,7 @@ id_maps = {
 }
 with open(OUT / "id_maps.json", "w") as f:
     json.dump(id_maps, f, indent=2)
-
+# train_mp_hcpnet.py expects id_maps_v2.json, so write the same file under that name
 with open(OUT / "id_maps_v2.json", "w") as f:
     json.dump(id_maps, f, indent=2)
 
@@ -367,9 +437,10 @@ print(f"  drug_fp:               {drug_fp.shape}")
 print(f"  cell_expr:             {cell_expr.shape}")
 print(f"  cell_mut:              {cell_mut.shape}")
 print(f"  hcdt_drug_gene:        {hcdt_drug_gene.shape}")
+print(f"  lincs_drug_gene:       {lincs_drug_gene.shape}")
 print(f"  hcdt_drug_path_direct: {hcdt_drug_path_direct.shape}")
 print(f"  hcdt_neg_drug_gene:    {hcdt_neg_drug_gene.shape}")
 print(f"  gene_pathway:          {gene_pathway.shape}")
 print(f"  sample_table:          {sample_table.shape}")
 print(f"\nOutput: {OUT}")
-print("Next: python src/data/build_drug_graphs.py, then build_drug_fp.py and scripts/build_pruned_mask.py")
+print("Next: set mat_dir: data/matrices_gdsc12 in configs/mp_hcpnet.yaml")

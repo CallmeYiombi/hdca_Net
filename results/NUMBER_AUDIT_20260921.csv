@@ -1,0 +1,45 @@
+family,quantity,paper_value,recomputed,status,source,note
+MoA probe,reference (direct-target),49.0 +/- 7.3,48.96 +/- 7.31,OK,server_snapshot/results/moa_summary_all.csv (prn),hits 7 6 8 8 9 9 = 47/96
+MoA probe,broad (lambda-matched),15.6 +/- 3.4,15.62 +/- 3.42,OK,moa_summary_all.csv (brd),hits 2 2 3 3 2 3
+MoA probe,dense (no mask),0.0 +/- 0.0,0.00 +/- 0.00,OK,moa_summary_all.csv (dns),
+MoA probe,hardpath,52.1 +/- 3.2,52.08 +/- 3.23,OK,moa_summary_all.csv (pathchain),
+MoA probe,randomized mask,3.8 +/- 5.6,3.75 +/- 5.59,OK,moa_summary_all.csv (random_mask_1-5),hits 0 2 0 0 1 = 3/80 matches fig2 caption
+MoA pathway attn,broad,50.0 +/- 12.5,50.00 +/- 12.50,OK,results/moa_path_attn.csv (brd),
+MoA pathway attn,direct-target,49.0,48.96 +/- 7.31,OK,results/moa_path_attn.csv (prn),gene 47/96 and path 47/96 coincide - genuine
+MoA 144-panel,reference,44.1 +/- 2.0,44.10 +/- 2.00,OK,results/prior_randomization.json,
+MoA 144-panel,M_dg randomized,1.7 +/- 1.3,1.67 +/- 1.26,OK,results/prior_randomization.json,
+MoA 144-panel,M_dg+M_dp randomized,1.2 +/- 2.8,1.25 +/- 2.80,OK,results/prior_randomization.json,
+MoA 144-panel,all three randomized,2.8 +/- 5.4,2.78 +/- 5.45,OK,results/prior_randomization.json,
+DRPreter,gene-to-pathway channel,21.9,21.88,OK,results/drpreter_moa_6seed.json,
+DRPreter,pathway attention channel,20.8,20.83,OK,results/drpreter_moa_6seed.json,
+DRPreter,raw gene-symbol channel,outside top ten for all 16 drugs,1 hit in 96 drug-seed runs,FIXED,results/drpreter_moa_6seed.json,claim was false; seed 5 = 6.2 percent = 1 drug
+DRPreter,raw GradCAM below own chance,below chance (fig 3B),not supported,FIXED,scripts/fig_moa_vs_drpreter.py,pathway chance 16.5 applied to a gene-ranking channel; row removed from figure
+Enrichment,HDCA-Net,12.5-fold,49.0 / 3.9 = 12.55,OK,Supplementary chance definition,
+Enrichment,DRPreter,1.3-fold,21.9 / 16.5 = 1.33,OK,Supplementary chance definition,
+TOST,broad vs reference,0.035 / 0.028,0.035 / 0.028,OK,recomputed from aligned per-run PCC,Welch form
+TOST,dense vs reference,0.084 / 0.250,0.084 / 0.250,OK,recomputed,Welch form
+TOST,sham vs reference,0.028 / 0.031,0.028 / 0.031,OK,recomputed,Welch form
+TOST,cardmatched vs reference,0.011 / 0.003,0.011 / 0.003,OK,recomputed,Welch form
+Cross-study PCC,reference,0.771 / 0.758,0.7705 / 0.7579,OK,server_snapshot pruned_div03 npz,
+Cross-study PCC,broad,0.775 / 0.754,0.7745 / 0.7537,OK,server_snapshot broad_div03 npz,
+Cross-study PCC,sham,0.773 / 0.754,0.7726 / 0.7537,OK,server_snapshot random_mask npz,
+Cross-study PCC,dense,0.767 / 0.751,0.7674 / 0.7512,OK,server_snapshot nomask_div03 npz,
+Cross-study PCC,cardmatched,0.7726 / 0.7572,0.7726 / 0.7572,OK,server_snapshot cardmatched npz,converted from raw to aligned this session
+Randomization spread,max across four arms,0.014,0.0141,OK,server_snapshot4 prior arms,was 0.012 on the raw scale
+Cluster bootstrap,CCLE compound CI,"[+0.002,+0.023] P=0.006","[+0.002,+0.024] P=0.010",FIXED,scripts/cluster_bootstrap.py,script read the flat diag2 npz; repointed at the reference runs
+Cluster bootstrap,gCSI compound CI,"[-0.002,+0.012] P=0.097","[-0.002,+0.012] P=0.097",OK,scripts/cluster_bootstrap.py,reproduces exactly from the reference runs
+Within-drug PCC,five published models,0.439 0.350 0.354 0.274 etc,all 10 exact,OK,scripts/within_drug_pcc.py,recipe recovered; DRPreter row added
+GDSC warm,HDCA-Net / additive,0.861 / 0.887,0.8615 / 0.887,OK,results/gdsc_6seed.csv,additive beats HDCA-Net - now stated in text
+GDSC unseen-drug,HDCA-Net,0.401 +/- 0.022,0.4013 +/- 0.0220,OK,results/gdsc_6seed.csv,SCC second to GraphDRP as footnoted
+Baseline fairness,gap range CCLE,+0.006 to +0.027,+0.0063 to +0.0270,OK,results/baseline_aux.json,
+Baseline fairness,gap range gCSI,+0.053 to +0.069,+0.0525 to +0.0694,OK,results/baseline_aux.json,
+Baseline fairness,scope,each deep-learning baseline,3 models only (GraphDRP DeepCDR TGSA),FIXED,results/baseline_aux.json,PANCDR was not retrained; wording narrowed
+Mask coverage,direct / broad annotated,421 / 435,421 / 435,OK,hcdt_drug_gene_pruned.npy,
+Mask coverage,rows changed,209,182 replaced + 27 emptied = 209,OK,mask arithmetic,paper said 196 keep; 169 keep + 27 emptied - FIXED
+Gene erasure,top-1 / mask-random / outside,0.396 / 0.088 / 0.0006 (ratio 4.5x),0.3957+/-0.0474 / 0.0890+/-0.0101 / 0.0006 (4.4x),FIXED,server results/faithfulness.json (6-seed reference checkpoints),paper now matches the 6-seed run exactly; rng is seeded so the run is deterministic and the JSON is the artifact of record
+Gene erasure,annotation-matched,0.275 / 0.143 (208 pairs),"0.2748+/-0.0334 / 0.1426+/-0.0122, 1.93x, 208 pairs",OK,server results/faithfulness.json (6-seed reference checkpoints),matches exactly; 275/512 eligible at k=1 also confirmed
+McNemar,broad vs direct on 144 panel,"36 vs 5, p=7.8e-7 (kept)","36 vs 5, p=7.84e-07",OK,scripts/moa_expand_chembl.py --broad brd_s* --direct prn_s* -> results/moa_dgidb_permutation.json,"numbers correct; only the description was wrong - it is the first seed, not the seed-averaged score. Six-seed range 40.2+/-3.1 vs 4.7+/-1.9 now given alongside"
+McNemar,30 true-vs-randomized pairings,"5 realizations, 67.8+/-0.4 true-only, p<=4.6e-16 (replaced 30 pairings p<=7.4e-14)",same,FIXED,server negctrl_mcnemar_all.py stdout,"negctrl_mcnemar_all.py emits 5 realization-level comparisons, not 30 pairings"
+Permutation null,144 panel,"42.4 vs 5.1+/-1.7, p=1e-4 (kept)","42.36 vs 5.07+/-1.7, p=9.999e-05",OK,scripts/moa_expand_chembl.py -> results/moa_dgidb_permutation.json,reproduces exactly; the stale negctrl_moa_dgidb.json (47.22/5.29) was an older run on different inputs and is what misled the first pass
+MoA 144-panel,broad lambda-matched,19.4 +/- 1.8,19.4 +/- 1.8,OK,server moa_dgidb_lambda_matched.py stdout,gain +24.7pp confirmed; lambda=0 arm is 21.2 +/- 1.6 (not used)
+Negative control,sham realization McNemar,(30 pairings) p <= 7.4e-14,"5 comparisons, true-only 67.8+/-0.4, sham-only <=4, p<=4.62e-16",FIXED,server negctrl_mcnemar_all.py stdout,paper now quotes exactly this; the dangling Supplementary Table S12 pointer was removed (no S-table reports McNemar)

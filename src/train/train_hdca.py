@@ -2,9 +2,9 @@
 HDCA-Net training & evaluation.
 
 Three modes (choose with --mode):
-  random   : 80/10/10 random split -- main test-set metrics
-  drug5    : drug-stratified 5-fold -- generalization to unseen drugs
-  cross    : train on GDSC1+2 -> evaluate on CCLE / gCSI
+  random   : 80/10/10 random split — main test-set metrics
+  drug5    : drug-stratified 5-fold — generalization to unseen drugs
+  cross    : train on GDSC1+2 → evaluate on CCLE / gCSI
 
 Ablation over alignment branches with --align (gene | pathway | both).
 
@@ -12,20 +12,20 @@ Examples
 --------
   # Main random-split run (both branches)
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode random --align both --gpu 0
+      --mode random --align both --gpu 4
 
   # Branch ablation, drug-5fold
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode drug5 --align gene     --gpu 0
+      --mode drug5 --align gene     --gpu 4
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode drug5 --align pathway  --gpu 0
+      --mode drug5 --align pathway  --gpu 4
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
-      --mode drug5 --align both     --gpu 0
+      --mode drug5 --align both     --gpu 4
 
   # Cross-dataset evaluation
   python src/train/train_hdca.py --config configs/hdca_gdsc12.yaml \\
       --mode cross --align both \\
-      --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019 --gpu 0
+      --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019 --gpu 4
 """
 import os, sys, json, time, argparse
 import numpy as np
@@ -38,10 +38,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from src.models.hdca_net import HDCANet
-from src.data.dataset_hdca import HDCADataset
+from src.data.dataset_mp import MPHCPNetDataset
 from src.data.split import random_split, drug_kfold
 from src.utils.seed import set_seed
 from src.utils.metrics import compute_metrics
+
 
 ALIGN_PRESETS = {
     "gene":    ("gene",),
@@ -49,18 +50,33 @@ ALIGN_PRESETS = {
     "both":    ("gene", "pathway"),
 }
 
+
+def describe_mask(name, m):
+    """One-line coverage fingerprint of a drug--gene mask, printed at load time so that
+    each run records which generation of the mask it consumed."""
+    rows = m.sum(1)
+    nz = rows > 0
+    med = float(np.median(rows[nz])) if nz.any() else 0.0
+    print(f"[mask] {name}: {int(nz.sum())}/{m.shape[0]} compounds annotated, "
+          f"median {med:.0f} genes, {int((~nz).sum())} empty rows", flush=True)
+
+
 def load_matrices(mat_dir, drug_gene_file="hcdt_drug_gene.npy",
-                  drug_path_file="hcdt_drug_path_direct.npy"):
+                  drug_path_file="hcdt_drug_path_direct.npy",
+                  gene_pathway_file="gene_pathway.npy"):
     load = lambda f: np.load(os.path.join(mat_dir, f))
+    describe_mask(drug_gene_file, load(drug_gene_file))
     return {
         "drug_fp":               load("drug_fp.npy"),
         "cell_expr":             load("cell_expr.npy"),
         "hcdt_drug_gene":        load(drug_gene_file),
+        "hcdt_drug_disease":     load("hcdt_drug_disease.npy"),
         "hcdt_drug_path_direct": load(drug_path_file),
         "hcdt_neg_drug_gene":    load("hcdt_neg_drug_gene.npy"),
-        "gene_pathway":          load("gene_pathway.npy"),
+        "gene_pathway":          load(gene_pathway_file),
         "sample_table":          pd.read_csv(os.path.join(mat_dir, "sample_table.csv")),
     }
+
 
 def build_model(cfg, gene_pathway_t, align_branches, device):
     return HDCANet(
@@ -85,19 +101,22 @@ def build_model(cfg, gene_pathway_t, align_branches, device):
         cell_norm_type=cfg.get("cell_norm_type", None),
     ).to(device)
 
+
 def make_loader(indices, sample_table, mat, cfg, shuffle, y_mean, y_std,
                 cell_expr_override=None):
     cell_expr = cell_expr_override if cell_expr_override is not None else mat["cell_expr"]
-    ds = HDCADataset(
+    ds = MPHCPNetDataset(
         sample_indices=indices, sample_table=sample_table,
         drug_fp=mat["drug_fp"], cell_expr=cell_expr,
         hcdt_drug_gene=mat["hcdt_drug_gene"],
+        hcdt_drug_disease=mat["hcdt_drug_disease"],
         hcdt_drug_path=mat["hcdt_drug_path_direct"],
         hcdt_neg_drug_gene=mat["hcdt_neg_drug_gene"],
         y_mean=y_mean, y_std=y_std,
     )
     return DataLoader(ds, batch_size=cfg["batch_size"], shuffle=shuffle,
                       num_workers=cfg.get("num_workers", 4), pin_memory=True)
+
 
 def run_epoch(model, loader, optimizer, device, cfg, train=True):
     model.train() if train else model.eval()
@@ -110,26 +129,26 @@ def run_epoch(model, loader, optimizer, device, cfg, train=True):
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
         for batch in loader:
-            drug_fp, cell_expr, dg, dp, neg, y = batch
+            drug_fp, cell_expr, dg, dr, dp, neg, y = batch
             drug_fp   = drug_fp.to(device);   cell_expr = cell_expr.to(device)
-            dg        = dg.to(device);         dp        = dp.to(device)
-            neg       = neg.to(device)
+            dg        = dg.to(device);         dr        = dr.to(device)
+            dp        = dp.to(device);         neg       = neg.to(device)
             y         = y.to(device)
 
             y_pred, neg_loss, align_weights, gene_entropy = model(
-                drug_fp, cell_expr, dg, dp,
+                drug_fp, cell_expr, dg, dr, dp,
                 hcdt_neg_gene=neg if train else None,
             )
             loss = nn.functional.mse_loss(y_pred.squeeze(), y)
             if train and lambda_neg > 0:
                 loss = loss + lambda_neg * neg_loss
             if train and lambda_gene_sparse > 0:
-
+                # concentrate gene attention within the over-broad HCDT mask (#8)
                 loss = loss + lambda_gene_sparse * gene_entropy
             if (train and lambda_align_div > 0
                     and align_weights is not None
                     and align_weights.size(0) > 1):
-
+                # Across-batch diversity: maximize std of each component
                 div = align_weights.std(dim=0).mean()
                 loss = loss - lambda_align_div * div
 
@@ -156,6 +175,7 @@ def run_epoch(model, loader, optimizer, device, cfg, train=True):
         m["align_w_std"]  = align_w_std_sum  / n_batches_aw
         m["align_w_mean0"] = align_w_mean_sum / n_batches_aw
     return m
+
 
 def train_loop(model, tr_loader, va_loader, cfg, device, out_dir,
                epochs, early_stop, lr_patience,
@@ -219,23 +239,27 @@ def train_loop(model, tr_loader, va_loader, cfg, device, out_dir,
     model.load_state_dict(torch.load(best_path, map_location=device))
     return best_epoch
 
+
 def test_metrics(model, te_loader, device, y_mean, y_std, save_path=None):
     model.eval()
     all_y, all_pred = [], []
     with torch.no_grad():
         for batch in te_loader:
-            drug_fp, cell_expr, dg, dp, neg, y = batch
+            drug_fp, cell_expr, dg, dr, dp, neg, y = batch
             y_pred, *_ = model(drug_fp.to(device), cell_expr.to(device),
-                                 dg.to(device), dp.to(device))
+                                 dg.to(device), dr.to(device), dp.to(device))
             all_y.append(y.numpy())
             all_pred.append(y_pred.squeeze().cpu().numpy())
     y_true = np.concatenate(all_y)    * y_std + y_mean
     y_pred = np.concatenate(all_pred) * y_std + y_mean
     mask = np.isfinite(y_true) & np.isfinite(y_pred)
     if save_path is not None:
-
+        # dump the per-pair predictions in raw ln_ic50, for offline winsorizing and subsetting
         np.savez(save_path, y_true=y_true, y_pred=y_pred)
     return compute_metrics(y_true[mask], y_pred[mask])
+
+
+# ── Mode: random split ───────────────────────────────────────────────────────
 
 def run_random(cfg, mat, gene_pathway_t, align_branches, device, out_root):
     set_seed(cfg["seed"])
@@ -248,13 +272,23 @@ def run_random(cfg, mat, gene_pathway_t, align_branches, device, out_root):
 
     model = build_model(cfg, gene_pathway_t, align_branches, device)
     out_dir = os.path.join(out_root, "random", "_".join(align_branches))
-    best_ep = train_loop(
-        model, _loader(tr_idx, True), _loader(va_idx, False), cfg, device, out_dir,
-        epochs=cfg["epochs"],
-        early_stop=cfg.get("early_stop", 30),
-        lr_patience=cfg.get("lr_patience", 7),
-    )
-    m = test_metrics(model, _loader(te_idx, False), device, y_mean, y_std)
+    if cfg.get("eval_only"):
+        # forward-only pass over an existing checkpoint; nothing is retrained
+        model.load_state_dict(torch.load(os.path.join(out_dir, "best.pt"),
+                                         map_location=device))
+        print(f"  [eval_only] loaded {out_dir}/best.pt")
+        best_ep = -1
+    else:
+        best_ep = train_loop(
+            model, _loader(tr_idx, True), _loader(va_idx, False), cfg, device, out_dir,
+            epochs=cfg["epochs"],
+            early_stop=cfg.get("early_stop", 30),
+            lr_patience=cfg.get("lr_patience", 7),
+        )
+    # per-pair predictions, so the split can be re-scored on any compound subset
+    m = test_metrics(model, _loader(te_idx, False), device, y_mean, y_std,
+                     save_path=os.path.join(out_dir, "pred.npz"))
+    np.savez(os.path.join(out_dir, "test_idx.npz"), test_idx=np.asarray(te_idx))
     print(f"  TEST | RMSE {m['rmse']:.4f}  PCC {m['pcc']:.4f}  "
           f"Spearman {m['spearman']:.4f}  (best ep {best_ep})")
 
@@ -263,6 +297,9 @@ def run_random(cfg, mat, gene_pathway_t, align_branches, device, out_root):
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
         json.dump(result, f, indent=2)
     return result
+
+
+# ── Mode: drug 5-fold ────────────────────────────────────────────────────────
 
 def run_drug5(cfg, mat, gene_pathway_t, align_branches, device, out_root):
     epochs       = cfg.get("ablation_epochs", 60)
@@ -283,11 +320,23 @@ def run_drug5(cfg, mat, gene_pathway_t, align_branches, device, out_root):
         model = build_model(cfg, gene_pathway_t, align_branches, device)
         out_dir = os.path.join(out_root, "drug5", "_".join(align_branches),
                                f"fold{fold+1}")
-        best_ep = train_loop(
-            model, _loader(tr_idx, True), _loader(va_idx, False), cfg, device,
-            out_dir, epochs=epochs, early_stop=early_stop, lr_patience=lr_patience,
-        )
-        m = test_metrics(model, _loader(te_idx, False), device, y_mean, y_std)
+        if cfg.get("eval_only"):
+            # forward-only pass over an existing checkpoint, so per-pair predictions can
+            # be dumped for a subset-aligned re-scoring without retraining
+            model.load_state_dict(torch.load(os.path.join(out_dir, "best.pt"),
+                                             map_location=device))
+            print(f"  [eval_only] fold {fold+1}: loaded {out_dir}/best.pt")
+            best_ep = -1
+        else:
+            best_ep = train_loop(
+                model, _loader(tr_idx, True), _loader(va_idx, False), cfg, device,
+                out_dir, epochs=epochs, early_stop=early_stop, lr_patience=lr_patience,
+            )
+        # dump per-pair predictions alongside the row indices, so the fold can be
+        # re-scored on any compound subset (e.g. the 433 DRPreter/PANCDR cover)
+        m = test_metrics(model, _loader(te_idx, False), device, y_mean, y_std,
+                         save_path=os.path.join(out_dir, "pred.npz"))
+        np.savez(os.path.join(out_dir, "test_idx.npz"), test_idx=np.asarray(te_idx))
         m["fold"], m["best_epoch"] = fold + 1, best_ep
         fold_metrics.append(m)
         print(f"  Fold {fold+1} | RMSE {m['rmse']:.4f}  PCC {m['pcc']:.4f}  "
@@ -309,9 +358,12 @@ def run_drug5(cfg, mat, gene_pathway_t, align_branches, device, out_root):
     os.makedirs(os.path.dirname(out_summary), exist_ok=True)
     with open(out_summary, "w") as f:
         json.dump({"folds": fold_metrics, "summary": summary}, f, indent=2)
-    print(f"\n  Drug-5fold summary | RMSE {summary['rmse_mean']:.4f}+/-{summary['rmse_std']:.4f}  "
-          f"PCC {summary['pcc_mean']:.4f}+/-{summary['pcc_std']:.4f}")
+    print(f"\n  Drug-5fold summary | RMSE {summary['rmse_mean']:.4f}±{summary['rmse_std']:.4f}  "
+          f"PCC {summary['pcc_mean']:.4f}±{summary['pcc_std']:.4f}")
     return summary
+
+
+# ── Mode: cross-dataset ──────────────────────────────────────────────────────
 
 def eval_on_external(model, eval_dir, mat, cfg, device, y_mean, y_std, save_dir=None):
     eval_path    = Path(eval_dir)
@@ -335,6 +387,7 @@ def eval_on_external(model, eval_dir, mat, cfg, device, y_mean, y_std, save_dir=
               "n_samples": len(sample_table)})
     return m
 
+
 def run_cross(cfg, mat, gene_pathway_t, align_branches, eval_dirs, device, out_root):
     out_dir = os.path.join(out_root, "cross_dataset", "_".join(align_branches))
     os.makedirs(out_dir, exist_ok=True)
@@ -342,7 +395,7 @@ def run_cross(cfg, mat, gene_pathway_t, align_branches, eval_dirs, device, out_r
     set_seed(cfg["seed"])
 
     sample_table = mat["sample_table"]
-    val_strategy = cfg.get("val_strategy", "drug")
+    val_strategy = cfg.get("val_strategy", "drug")  # drug | random | cell
     val_frac     = cfg.get("val_frac", 0.1)
     rng = np.random.default_rng(cfg["seed"])
 
@@ -395,7 +448,7 @@ def run_cross(cfg, mat, gene_pathway_t, align_branches, eval_dirs, device, out_r
     if cfg.get("eval_only"):
         best_path = os.path.join(out_dir, "best.pt")
         model.load_state_dict(torch.load(best_path, map_location=device))
-        print(f"  [eval_only] loaded {best_path} (training skipped; y_mean/y_std recomputed with the same seed)")
+        print(f"  [eval_only] loaded {best_path} (training skipped; y_mean/y_std recomputed on the same seed)")
         best_ep = -1
     else:
         best_ep = train_loop(
@@ -423,20 +476,23 @@ def run_cross(cfg, mat, gene_pathway_t, align_branches, eval_dirs, device, out_r
         json.dump(results, f, indent=2)
     return results
 
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--mode",   choices=["random", "drug5", "cross"], required=True)
     parser.add_argument("--align",  choices=["gene", "pathway", "both"], default="both")
     parser.add_argument("--eval_dirs", nargs="+",
-                        help="cross mode only: external evaluation dataset directories")
+                        help="evaluation dataset directories; cross mode only")
     parser.add_argument("--gpu", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None,
                         help="override cfg['seed'] (multi-seed significance runs)")
     parser.add_argument("--tag", type=str, default=None,
                         help="suffix appended to out_dir so seeds don't collide")
     parser.add_argument("--eval_only", action="store_true",
-                        help="skip training, load best.pt, run cross evaluation and dump per-pair predictions (npz)")
+                        help="skip training, load best.pt, run the cross evaluation and dump per-pair predictions")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -458,7 +514,8 @@ def main():
 
     mat = load_matrices(cfg["mat_dir"],
                         cfg.get("hcdt_drug_gene_file", "hcdt_drug_gene.npy"),
-                        cfg.get("hcdt_drug_path_file", "hcdt_drug_path_direct.npy"))
+                        cfg.get("hcdt_drug_path_file", "hcdt_drug_path_direct.npy"),
+                        cfg.get("gene_pathway_file", "gene_pathway.npy"))
     cfg["fp_dim"]       = mat["drug_fp"].shape[1]
     cfg["num_genes"]    = mat["cell_expr"].shape[1]
     cfg["num_pathways"] = mat["gene_pathway"].shape[1]
@@ -478,6 +535,7 @@ def main():
             raise SystemExit("--eval_dirs required for cross mode")
         run_cross(cfg, mat, gene_pathway_t, align_branches,
                   args.eval_dirs, device, out_root)
+
 
 if __name__ == "__main__":
     main()

@@ -7,11 +7,11 @@ Usage
 PYTHONPATH=. python src/train/train_pancdr.py \
     --mat_dir data/matrices_gdsc12 --split cross \
     --eval_dirs data/matrices_ccle_2015 data/matrices_gcsi_2019 \
-    --gpu 0 --out_dir results/baselines
+    --gpu 6 --out_dir results/baselines
 
 # random split (in-distribution, Table 1) and drug 5-fold (Table 2):
-PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split random --gpu 0
-PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split drug   --gpu 0
+PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split random --gpu 6
+PYTHONPATH=. python src/train/train_pancdr.py --mat_dir data/matrices_gdsc12 --split drug   --gpu 6
 
 Notes
 -----
@@ -40,6 +40,8 @@ from src.utils.metrics import compute_metrics
 
 SEED = 42
 
+
+# ── hyper-parameters (defaults follow the original PANCDR tuned ranges) ──────────
 def get_params(args):
     return dict(
         nz=args.nz, d_dim=args.d_dim, lr=args.lr, lr_adv=args.lr_adv,
@@ -47,17 +49,21 @@ def get_params(args):
         epochs=args.epochs, patience=args.patience, num_workers=args.num_workers,
     )
 
+
+# ── data helpers ────────────────────────────────────────────────────────────────
 def zscore(expr, eps=1e-8):
     """Per-gene standardisation within a dataset (matches PANCDR z-scored expr)."""
     mu = expr.mean(axis=0, keepdims=True)
     sd = expr.std(axis=0, keepdims=True)
     return ((expr - mu) / (sd + eps)).astype(np.float32)
 
+
 def valid_drug_mask(feats):
     """Drugs whose SMILES resolved have a non-zero atom-feature matrix; the rest
-    are zero-graphs (unresolved names / biologics) and MUST be excluded -- feeding
+    are zero-graphs (unresolved names / biologics) and MUST be excluded — feeding
     identical zero inputs for many drugs would corrupt training."""
     return np.abs(feats).reshape(feats.shape[0], -1).sum(axis=1) > 0
+
 
 def load_matrices(mat_dir, log=None):
     def L(f):
@@ -75,6 +81,7 @@ def load_matrices(mat_dir, log=None):
     (log.info if log else print)(msg)
     return feats, adj, expr, tbl, valid
 
+
 def drug_based_train_val_split(sample_tbl, seed, val_frac=0.1):
     rng = np.random.default_rng(seed)
     drugs = np.array(sorted(sample_tbl["drug_name_lower"].unique()))
@@ -85,11 +92,14 @@ def drug_based_train_val_split(sample_tbl, seed, val_frac=0.1):
     va = sample_tbl.index[sample_tbl["drug_name_lower"].isin(val_drugs)].values
     return tr, va
 
+
 def make_loader(idx, tbl, feats, adj, expr, y_mean, y_std, bs, nw, shuffle):
     ds = PancdrDataset(idx, tbl, feats, adj, expr, y_mean, y_std)
     return DataLoader(ds, batch_size=bs, shuffle=shuffle, num_workers=nw,
                       pin_memory=True, drop_last=shuffle)
 
+
+# ── training core ────────────────────────────────────────────────────────────────
 def train_pancdr(model, tr_loader, va_loader, target_expr, params, device,
                  out_dir, y_mean, y_std, log):
     os.makedirs(out_dir, exist_ok=True)
@@ -121,7 +131,7 @@ def train_pancdr(model, tr_loader, va_loader, target_expr, params, device,
             y = y.view(-1, 1).to(device)
 
             if use_adv:
-
+                # (A) discriminator: source=0, target=1
                 opt_adv.zero_grad()
                 z_s, _, _ = model.encoder(gexpr)
                 z_t, _, _ = model.encoder(t_gexpr)
@@ -132,6 +142,7 @@ def train_pancdr(model, tr_loader, va_loader, target_expr, params, device,
                 d_loss.backward()
                 opt_adv.step()
 
+            # (B) encoder + cdr
             opt.zero_grad()
             z_s, _, _ = model.encoder(gexpr)
             y_pred = model.cdr(drug_feat, drug_adj, z_s)
@@ -161,6 +172,7 @@ def train_pancdr(model, tr_loader, va_loader, target_expr, params, device,
     model.load_state_dict(torch.load(os.path.join(out_dir, "best.pt"), map_location=device))
     return best_ep
 
+
 @torch.no_grad()
 def evaluate(model, loader, device, y_mean, y_std, save_path=None):
     model.eval()
@@ -174,9 +186,10 @@ def evaluate(model, loader, device, y_mean, y_std, save_path=None):
     y_pred = np.concatenate(preds) * y_std + y_mean
     mask = np.isfinite(y_true) & np.isfinite(y_pred)
     if save_path is not None:
-
+        # dump the per-pair predictions in raw ln_ic50, for offline winsorizing and subsetting
         np.savez(save_path, y_true=y_true, y_pred=y_pred)
     return compute_metrics(y_true[mask], y_pred[mask])
+
 
 def eval_external(model, eval_dir, feats, adj, valid, y_mean, y_std, device, params, log, save_path=None):
     p = Path(eval_dir)
@@ -194,10 +207,13 @@ def eval_external(model, eval_dir, feats, adj, valid, y_mean, y_std, device, par
     m["n_samples"] = int(len(tbl))
     return m
 
+
 def build_model(expr, feats, params, device):
     return PANCDR(n_genes=expr.shape[1], atom_feat_dim=feats.shape[-1],
                   nz=params["nz"], d_dim=params["d_dim"], is_regr=True).to(device)
 
+
+# ── main ─────────────────────────────────────────────────────────────────────────
 def setup_logger(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lg = logging.getLogger("pancdr")
@@ -208,6 +224,7 @@ def setup_logger(path):
         lg.addHandler(h)
     return lg
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mat_dir", default="data/matrices_gdsc12")
@@ -216,9 +233,9 @@ def main():
     ap.add_argument("--out_dir", default="results/baselines")
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--eval_only", action="store_true",
-                    help="skip training, load cross_dataset/PANCDR/best.pt, evaluate and dump predictions (npz)")
+                    help="skip training, load cross_dataset/PANCDR/best.pt, evaluate and dump predictions")
     ap.add_argument("--seed", type=int, default=42,
-                    help="multi-seed reproduction: cross best.pt is isolated under seed<N>/, npz files share the model directory")
+                    help="for reproducibility across seeds: best.pt is isolated under seed<N>/ while the npz files share the model dir")
     ap.add_argument("--nz", type=int, default=256)
     ap.add_argument("--d_dim", type=int, default=100)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -237,7 +254,7 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     params = get_params(args)
-    log = setup_logger(os.path.join(args.out_dir, f"pancdr_{args.split}.log"))
+    log = setup_logger(os.path.join(args.out_dir, f"pancdr_{args.split}_seed{args.seed}.log"))
     log.info(f"device={device}  split={args.split}  params={params}")
 
     feats, adj, expr, tbl, valid = load_matrices(args.mat_dir, log)
@@ -254,8 +271,8 @@ def main():
         target_expr = np.concatenate([zscore(np.load(Path(d) / "cell_expr.npy"))
                                       for d in args.eval_dirs], axis=0)
         model = build_model(expr, feats, params, device)
-        model_dir = os.path.join(args.out_dir, "cross_dataset", "PANCDR")
-        out_dir   = os.path.join(model_dir, f"seed{SEED}")
+        model_dir = os.path.join(args.out_dir, "cross_dataset", "PANCDR")   # npz files shared, since the aggregator globs per model dir
+        out_dir   = os.path.join(model_dir, f"seed{SEED}")                  # best.pt isolated per seed, to avoid races
         os.makedirs(out_dir, exist_ok=True)
         tr_loader = make_loader(tr, tbl, feats, adj, expr, y_mean, y_std,
                                 params["batch_size"], params["num_workers"], True)
@@ -284,7 +301,7 @@ def main():
         y_mean = float(tbl.iloc[tr]["ln_ic50"].mean())
         y_std = float(tbl.iloc[tr]["ln_ic50"].std())
         model = build_model(expr, feats, params, device)
-        out_dir = os.path.join(args.out_dir, "random", "PANCDR")
+        out_dir = os.path.join(args.out_dir, "random", "PANCDR", f"seed{SEED}")
         tr_loader = make_loader(tr, tbl, feats, adj, expr, y_mean, y_std,
                                 params["batch_size"], params["num_workers"], True)
         va_loader = make_loader(va, tbl, feats, adj, expr, y_mean, y_std,
@@ -299,13 +316,13 @@ def main():
         log.info(f"  [PANCDR/random] RMSE={m['rmse']:.4f} PCC={m['pcc']:.4f} SCC={m['spearman']:.4f}")
         json.dump(m, open(os.path.join(out_dir, "metrics.json"), "w"), indent=2)
 
-    else:
+    else:  # drug 5-fold
         for fold, tr, va, te in drug_kfold(tbl, n_splits=5, seed=SEED):
             set_seed(SEED + fold)
             y_mean = float(tbl.iloc[tr]["ln_ic50"].mean())
             y_std = float(tbl.iloc[tr]["ln_ic50"].std())
             model = build_model(expr, feats, params, device)
-            out_dir = os.path.join(args.out_dir, "drug_fold", "PANCDR", f"fold{fold+1}")
+            out_dir = os.path.join(args.out_dir, "drug_fold", "PANCDR", f"seed{SEED}", f"fold{fold+1}")
             tr_loader = make_loader(tr, tbl, feats, adj, expr, y_mean, y_std,
                                     params["batch_size"], params["num_workers"], True)
             va_loader = make_loader(va, tbl, feats, adj, expr, y_mean, y_std,
@@ -320,12 +337,13 @@ def main():
             log.info(f"  [PANCDR/drug fold{fold+1}] PCC={m['pcc']:.4f} SCC={m['spearman']:.4f}")
         pcc = np.mean([r["pcc"] for r in results])
         scc = np.mean([r["spearman"] for r in results])
-        log.info(f"  [PANCDR/drug5 mean] PCC={pcc:.4f}+/-{np.std([r['pcc'] for r in results]):.4f} SCC={scc:.4f}")
-        json.dump(results, open(os.path.join(args.out_dir, "drug_fold", "PANCDR", "summary.json"), "w"), indent=2)
+        log.info(f"  [PANCDR/drug5 mean] PCC={pcc:.4f}±{np.std([r['pcc'] for r in results]):.4f} SCC={scc:.4f}")
+        json.dump(results, open(os.path.join(args.out_dir, "drug_fold", "PANCDR", f"seed{SEED}", "summary.json"), "w"), indent=2)
 
     pd.DataFrame(results).to_csv(
-        os.path.join(args.out_dir, f"pancdr_results_{args.split}.csv"), index=False)
+        os.path.join(args.out_dir, f"pancdr_results_{args.split}_seed{SEED}.csv"), index=False)
     log.info("done.")
+
 
 if __name__ == "__main__":
     main()

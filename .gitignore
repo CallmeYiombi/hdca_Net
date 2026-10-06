@@ -1,8 +1,23 @@
 __pycache__/
 *.pyc
 .DS_Store
-data/
-results/
+# Large inputs and run outputs are not versioned, but the small artifacts the
+# paper's controls are read from are, so every reported number has a file here.
+data/*
+!data/direct_target_mask.csv
+results/*
+!results/faithfulness.json
+!results/negctrl_mcnemar.json
+!results/moa_dgidb_lambda_matched.json
+!results/moa_dgidb_permutation.json
+!results/prior_randomization.json
+!results/baseline_aux.json
+!results/drpreter_moa_6seed.json
+!results/within_drug_pcc.csv
+!results/variants_aligned_per_run.csv
+!results/moa_path_attn.csv
+!results/moa_path_align.csv
+!results/NUMBER_AUDIT_20260921.csv
 logs/
 *.pt
 *.npy

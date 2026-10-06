@@ -1,32 +1,47 @@
 """
 HDCA-Net: Hierarchical Drug-Cell Cross-Alignment Network.
 
-Most drug-response models encode the drug and the cell line separately and leave
-their interaction to the predictor MLP. HDCA-Net instead aligns drug-target signal
-with cell state explicitly, at two biological scales:
+Contribution
+------------
+Existing drug-response models compute a drug representation and a cell
+representation separately, then concatenate (or element-wise interact) the two
+for prediction. This treats drug and cell as independent feature spaces and
+relies on the predictor MLP to discover their interaction.
+
+HDCA-Net instead introduces an **explicit cross-alignment** between drug-target
+signals and cancer cell dysregulation at **two biological scales**:
 
   (1) Gene-level alignment
-        gene_attn    = TargetGate(z_d, hcdt_drug_gene)         (B, G)
+        gene_attn   = TargetGate(z_d, HCDT_drug_gene)         (B, G)
         gene_aligned = gene_attn * cell_expr                   (B, G)
         p_gene_align = PathwayBottleneck(gene_aligned)         (B, P)
 
-      How strongly are the drug's target genes expressed in this cell line,
-      aggregated per pathway?
+      Reads as: "How strongly are the drug's target genes expressed
+      in this specific cancer cell, aggregated per pathway?"
 
   (2) Pathway-level alignment
-        path_attn    = DirectPathwayGate(z_d, hcdt_drug_path)  (B, P)
+        path_attn    = DirectGate(z_d, HCDT_drug_path)         (B, P)
         cell_path    = CellEncoder(cell_expr)                  (B, P)
         p_path_align = path_attn * cell_path                   (B, P)
 
-      How active are the drug's annotated pathways in this cell line?
+      Reads as: "How active are the drug's annotated pathways
+      in this specific cancer cell?"
 
-A drug-conditional 2-way attention fuses the branches into p_align (B, P), and the
-prediction head consumes cat([p_align, cell_path, p_align * cell_path,
-|p_align - cell_path|]).
+The two alignment vectors are fused by a drug-conditional 2-way attention,
+yielding a single mechanism-aware drug-cell representation p_align (B, P).
+Final prediction uses cat([p_align, cell_path, p_align*cell_path,
+|p_align - cell_path|]) → MLP.
 
-Cell expression enters both branches, so the representation is anchored to the cell
-line rather than to drug identity, and gene_attn, path_attn and the fusion weights
-are each inspectable for the interpretability analyses.
+Key design choices
+------------------
+- No MultiPathFusion 3-way competition (prior MP-HCPNet collapse mode removed).
+- Path1 and Path3 are repurposed from "drug-only representations" to
+  "drug-cell alignment representations", so they no longer model the same
+  drug signal in parallel.
+- Cell expression participates in BOTH alignment branches, anchoring the
+  representation to the specific cell line rather than the drug identity.
+- Interpretability: gene_attn, path_attn, and the alignment weights are
+  individually inspectable.
 """
 import torch
 import torch.nn as nn
@@ -36,6 +51,7 @@ from .target_gate import HCDTTargetGate
 from .direct_path_gate import DirectPathwayGate
 from .pathway_bottleneck import PathwayBottleneck
 from .cell_encoder import CellPathwayEncoder
+
 
 class HDCANet(nn.Module):
     def __init__(self,
@@ -65,7 +81,8 @@ class HDCANet(nn.Module):
         assert len(self.align_branches) >= 1
         for b in self.align_branches:
             assert b in ("gene", "pathway")
-
+        # Per-branch normalization (defaults to the global norm_type).
+        # Enables "hybrid" configs, e.g. gene=layer, pathway=batch.
         self.gene_norm_type = gene_norm_type or norm_type
         self.path_norm_type = path_norm_type or norm_type
         self.cell_norm_type = cell_norm_type or norm_type
@@ -79,6 +96,7 @@ class HDCANet(nn.Module):
             return nn.BatchNorm1d(dim) if kind == "batch" else nn.LayerNorm(dim)
         self._make_norm = _make_norm
 
+        # Drug encoder
         self.drug_encoder = DrugEncoder(
             fp_dim=fp_dim,
             hidden_dim=drug_enc_hidden,
@@ -87,6 +105,7 @@ class HDCANet(nn.Module):
             fp_input_dropout=fp_input_dropout,
         )
 
+        # Gene-level alignment branch
         if "gene" in self.align_branches:
             self.gene_embedding = nn.Parameter(
                 torch.randn(num_genes, drug_enc_out) * 0.01
@@ -103,6 +122,7 @@ class HDCANet(nn.Module):
             )
             self.norm_p_gene_align = self._make_norm(num_pathways, self.gene_norm_type)
 
+        # Pathway-level alignment branch
         if "pathway" in self.align_branches:
             self.path_gate = DirectPathwayGate(
                 drug_dim=drug_enc_out,
@@ -112,6 +132,7 @@ class HDCANet(nn.Module):
             )
             self.norm_p_path_align = self._make_norm(num_pathways, self.path_norm_type)
 
+        # Cell encoder (used by both: pathway-level alignment + final fusion)
         self.cell_encoder = CellPathwayEncoder(
             gene_pathway_matrix=gene_pathway_matrix,
             use_mutation=use_mutation,
@@ -119,6 +140,7 @@ class HDCANet(nn.Module):
         )
         self.norm_cell = self._make_norm(num_pathways, self.cell_norm_type)
 
+        # Drug-conditional alignment weights (between gene/pathway branches)
         if len(self.align_branches) > 1:
             self.align_weight_net = nn.Sequential(
                 nn.Linear(drug_enc_out, 64),
@@ -127,6 +149,7 @@ class HDCANet(nn.Module):
                 nn.Linear(64, len(self.align_branches)),
             )
 
+        # Predictor: cat([p_align, p_cell, p_align*p_cell, |p_align - p_cell|])
         fusion_dim = num_pathways * 4
         self.predictor = nn.Sequential(
             nn.Linear(fusion_dim, 512),
@@ -148,15 +171,15 @@ class HDCANet(nn.Module):
                             hcdt_drug_gene, hcdt_drug_path):
         """Returns dict with branch vectors + intermediate attentions."""
         out = {}
-        cell_path_raw = self.cell_encoder(cell_expr, cell_mut)
+        cell_path_raw = self.cell_encoder(cell_expr, cell_mut)   # (B, P)
         out["cell_path_raw"] = cell_path_raw
 
         if "gene" in self.align_branches:
-            gene_attn    = self.gene_gate(z_d, self.gene_embedding, hcdt_drug_gene)
-            gene_aligned = gene_attn * cell_expr
+            gene_attn    = self.gene_gate(z_d, self.gene_embedding, hcdt_drug_gene)  # (B, G)
+            gene_aligned = gene_attn * cell_expr                                     # (B, G)
             p_gene_align = self.norm_p_gene_align(
                 self.pathway_bottleneck(gene_aligned)
-            )
+            )                                                                        # (B, P)
             has_target = (hcdt_drug_gene.sum(dim=1) > 0).float().unsqueeze(1)
             p_gene_align = p_gene_align * has_target
             out["gene_attn"]    = gene_attn
@@ -164,8 +187,8 @@ class HDCANet(nn.Module):
             out["p_gene_align"] = p_gene_align
 
         if "pathway" in self.align_branches:
-            path_attn    = self.path_gate(z_d, hcdt_drug_path)
-            path_aligned = path_attn * cell_path_raw
+            path_attn    = self.path_gate(z_d, hcdt_drug_path)                       # (B, P)
+            path_aligned = path_attn * cell_path_raw                                 # (B, P)
             p_path_align = self.norm_p_path_align(path_aligned)
             has_path = (hcdt_drug_path.sum(dim=1) > 0).float().unsqueeze(1)
             p_path_align = p_path_align * has_path
@@ -179,20 +202,22 @@ class HDCANet(nn.Module):
                 drug_fp: torch.Tensor,
                 cell_expr: torch.Tensor,
                 hcdt_drug_gene: torch.Tensor,
+                hcdt_drug_disease: torch.Tensor,
                 hcdt_drug_path: torch.Tensor,
                 hcdt_neg_gene: torch.Tensor = None,
                 cell_mut: torch.Tensor = None):
-
+        # Mask dropout (regularization against HCDT memorization)
         if self.mask_dropout > 0 and self.training:
             hcdt_drug_gene = self._mask_drop(hcdt_drug_gene)
             hcdt_drug_path = self._mask_drop(hcdt_drug_path)
 
-        z_d = self.drug_encoder(drug_fp)
+        z_d = self.drug_encoder(drug_fp)                                # (B, D)
 
         align = self._compute_alignments(
             z_d, cell_expr, cell_mut, hcdt_drug_gene, hcdt_drug_path
         )
 
+        # Hierarchical alignment fusion
         branch_vecs = []
         if "gene" in self.align_branches:
             branch_vecs.append(align["p_gene_align"])
@@ -203,8 +228,8 @@ class HDCANet(nn.Module):
             p_align = branch_vecs[0]
             align_weights = None
         else:
-            align_logits = self.align_weight_net(z_d)
-            align_weights = torch.softmax(align_logits, dim=-1)
+            align_logits = self.align_weight_net(z_d)                   # (B, K)
+            align_weights = torch.softmax(align_logits, dim=-1)         # (B, K)
             p_align = sum(
                 align_weights[:, i:i+1] * v for i, v in enumerate(branch_vecs)
             )
@@ -215,6 +240,7 @@ class HDCANet(nn.Module):
         fusion = torch.cat([p_align, p_cell, prod, diff], dim=-1)
         y_pred = self.predictor(fusion)
 
+        # Negative DTI auxiliary loss (gene-level alignment only)
         neg_loss = torch.tensor(0.0, device=drug_fp.device)
         if ("gene" in self.align_branches
                 and hcdt_neg_gene is not None and self.training):
@@ -223,19 +249,23 @@ class HDCANet(nn.Module):
             has_pos = hcdt_drug_gene.sum(dim=1) > 0
             valid = (neg_sum > 0) & has_pos
             if valid.any():
-                attn_on_neg = (gene_attn[valid] * hcdt_neg_gene[valid]).sum(dim=1)                              / neg_sum[valid]
+                attn_on_neg = (gene_attn[valid] * hcdt_neg_gene[valid]).sum(dim=1) \
+                              / neg_sum[valid]
                 neg_loss = attn_on_neg.mean()
 
+        # Gene-attention sparsity penalty: minimize (size-normalized) entropy of the
+        # gene attention so the branch concentrates on the true target inside the
+        # over-broad HCDT mask (many drugs have 300-400 masked genes -> collapse).
         gene_entropy = torch.tensor(0.0, device=drug_fp.device)
         if "gene" in self.align_branches and self.training:
-            ga = align["gene_attn"]
-            n_tgt = (hcdt_drug_gene > 0).sum(dim=1)
+            ga = align["gene_attn"]                              # (B, G), sums to 1
+            n_tgt = (hcdt_drug_gene > 0).sum(dim=1)              # (B,)
             valid = n_tgt > 1
             if valid.any():
                 p = ga[valid].clamp_min(1e-12)
-                ent = -(p * p.log()).sum(dim=1)
+                ent = -(p * p.log()).sum(dim=1)                  # (Bv,)
                 denom = n_tgt[valid].float().log().clamp_min(1e-6)
-                gene_entropy = (ent / denom).mean()
+                gene_entropy = (ent / denom).mean()              # normalized to [0,1]
 
         return y_pred, neg_loss, align_weights, gene_entropy
 

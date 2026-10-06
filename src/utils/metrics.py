@@ -2,6 +2,7 @@ import numpy as np
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
+
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     y_true = y_true.flatten()
     y_pred = y_pred.flatten()
@@ -11,6 +12,7 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     pcc, _ = pearsonr(y_true, y_pred)
     scc, _ = spearmanr(y_true, y_pred)
     return {"rmse": rmse, "mae": mae, "r2": r2, "pcc": float(pcc), "spearman": float(scc)}
+
 
 def compute_loto_summary(drug_metrics: list) -> dict:
     """drug_metrics: list of dicts with 'pcc' key."""

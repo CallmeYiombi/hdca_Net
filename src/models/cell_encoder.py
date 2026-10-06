@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class CellPathwayEncoder(nn.Module):
     """
     Aggregates cell-line omics (expression, optionally mutation) into
@@ -9,10 +10,10 @@ class CellPathwayEncoder(nn.Module):
     def __init__(self, gene_pathway_matrix: torch.Tensor,
                  use_mutation: bool = False, dropout: float = 0.2):
         super().__init__()
-        A = gene_pathway_matrix.float()
+        A = gene_pathway_matrix.float()          # (G, P)
         pathway_size = A.sum(dim=0).clamp(min=1.0)
         A_norm = A / torch.sqrt(pathway_size)
-        self.register_buffer("A", A_norm)
+        self.register_buffer("A", A_norm)        # (G, P)
 
         self.use_mutation = use_mutation
         num_pathways = A.shape[1]
@@ -32,12 +33,12 @@ class CellPathwayEncoder(nn.Module):
         cell_mut  : (B, G) optional
         returns   : (B, P)
         """
-        expr_path = cell_expr @ self.A
+        expr_path = cell_expr @ self.A            # (B, P)
 
         if self.use_mutation and cell_mut is not None:
-            mut_path = cell_mut @ self.A
+            mut_path = cell_mut @ self.A          # (B, P)
             combined = torch.cat([expr_path, mut_path], dim=-1)
         else:
             combined = expr_path
 
-        return self.mlp(combined)
+        return self.mlp(combined)                 # (B, P)

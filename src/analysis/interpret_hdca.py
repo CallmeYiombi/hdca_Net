@@ -1,14 +1,14 @@
 """
 HDCA-Net interpretability analysis.
 
-Per-drug averaged alignment scores -> MoA validation + heatmaps.
+Per-drug averaged alignment scores → MoA validation + heatmaps.
 
-Extracts (averaged over the samples of each drug):
-  gene_attn       (D, G)  -- gene-level attention over HCDT gene targets
-  path_attn       (D, P)  -- pathway-level attention over HCDT pathway mask
-  p_gene_align    (D, P)  - gene-aligned pathway vector (with cell context)
-  p_path_align    (D, P)  - pathway-aligned vector (with cell context)
-  align_weights   (D, 2)  -- drug-conditional [gene_branch, pathway_branch] softmax
+Extracts, averaged over cell lines for each drug:
+  gene_attn       (D, G)  — gene-level attention over HCDT gene targets
+  path_attn       (D, P)  — pathway-level attention over HCDT pathway mask
+  p_gene_align    (D, P)  -- gene-aligned pathway vector, with cell context
+  p_path_align    (D, P)  -- pathway-aligned vector, with cell context
+  align_weights   (D, 2)  — drug-conditional [gene_branch, pathway_branch] softmax
 
 Usage:
   python src/analysis/interpret_hdca.py \\
@@ -16,7 +16,7 @@ Usage:
       --model_path results/hdca_gdsc12_diag2/cross_dataset/gene_pathway/best.pt \\
       --align both \\
       --out_dir results/interpret_hdca/cross \\
-      --gpu 0
+      --gpu 4
 """
 import os, sys, json, argparse
 import numpy as np
@@ -29,12 +29,13 @@ import matplotlib.pyplot as plt
 try:
     import seaborn as sns
 except ModuleNotFoundError:
-    sns = None
+    sns = None   # heatmaps skipped if unavailable; MoA csv output unaffected
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from src.models.hdca_net import HDCANet
-from src.data.dataset_hdca import HDCADataset
+from src.data.dataset_mp import MPHCPNetDataset
+
 
 ALIGN_PRESETS = {
     "gene":    ("gene",),
@@ -42,6 +43,8 @@ ALIGN_PRESETS = {
     "both":    ("gene", "pathway"),
 }
 
+
+# Known drug MoA, checked by keyword matching
 DRUG_MOA = {
     "erlotinib":    ["EGFR", "ErbB"],
     "gefitinib":    ["EGFR", "ErbB"],
@@ -64,18 +67,22 @@ DRUG_MOA = {
     "rucaparib":    ["PARP", "DNA repair"],
 }
 
+
 def load_matrices(mat_dir, drug_gene_file="hcdt_drug_gene.npy",
-                  drug_path_file="hcdt_drug_path_direct.npy"):
+                  drug_path_file="hcdt_drug_path_direct.npy",
+                  gene_pathway_file="gene_pathway.npy"):
     load = lambda f: np.load(os.path.join(mat_dir, f))
     return {
         "drug_fp":               load("drug_fp.npy"),
         "cell_expr":             load("cell_expr.npy"),
         "hcdt_drug_gene":        load(drug_gene_file),
+        "hcdt_drug_disease":     load("hcdt_drug_disease.npy"),
         "hcdt_drug_path_direct": load(drug_path_file),
         "hcdt_neg_drug_gene":    load("hcdt_neg_drug_gene.npy"),
-        "gene_pathway":          load("gene_pathway.npy"),
+        "gene_pathway":          load(gene_pathway_file),
         "sample_table":          pd.read_csv(os.path.join(mat_dir, "sample_table.csv")),
     }
+
 
 def extract_scores(model, mat, cfg, device, align_branches):
     """Run inference over all samples, average scores per drug_idx."""
@@ -95,10 +102,11 @@ def extract_scores(model, mat, cfg, device, align_branches):
     counts = np.zeros(num_drugs, dtype=np.int64)
 
     all_idx = np.arange(len(sample_table))
-    ds = HDCADataset(
+    ds = MPHCPNetDataset(
         sample_indices=all_idx, sample_table=sample_table,
         drug_fp=mat["drug_fp"], cell_expr=mat["cell_expr"],
         hcdt_drug_gene=mat["hcdt_drug_gene"],
+        hcdt_drug_disease=mat["hcdt_drug_disease"],
         hcdt_drug_path=mat["hcdt_drug_path_direct"],
         hcdt_neg_drug_gene=mat["hcdt_neg_drug_gene"],
         y_mean=0.0, y_std=1.0,
@@ -116,7 +124,7 @@ def extract_scores(model, mat, cfg, device, align_branches):
     pos = 0
     with torch.no_grad():
         for batch in loader:
-            drug_fp, cell_expr, dg, dp, neg, y = batch
+            drug_fp, cell_expr, dg, dd, dp, neg, y = batch
             out = model.get_alignment_scores(
                 drug_fp.to(device), cell_expr.to(device),
                 dg.to(device), dp.to(device),
@@ -158,17 +166,21 @@ def extract_scores(model, mat, cfg, device, align_branches):
     avg["drug_count"]  = counts
     return avg
 
+
 def get_drug_names(mat):
     tbl = mat["sample_table"]
     return dict(zip(tbl["drug_idx"], tbl["drug_name_lower"]))
+
 
 def get_pathway_names(mat_dir):
     with open(os.path.join(mat_dir, "id_maps.json")) as f:
         return json.load(f).get("pathway_list")
 
+
 def get_gene_names(mat_dir):
     with open(os.path.join(mat_dir, "id_maps.json")) as f:
         return json.load(f).get("gene_list")
+
 
 def validate_moa(score_matrix, drug_names, pathway_names, valid_drugs, out_path,
                  top_k=10):
@@ -200,7 +212,7 @@ def validate_moa(score_matrix, drug_names, pathway_names, valid_drugs, out_path,
             "expected_kws": ", ".join(keywords),
             "top5":         " | ".join(top_names[:5]),
             "top5_scores":  " | ".join(f"{s:.3f}" for s in top_scores[:5]),
-            "moa_hits":     "; ".join(hits) if hits else "--",
+            "moa_hits":     "; ".join(hits) if hits else "—",
             "hit":          len(hits) > 0,
         })
 
@@ -214,6 +226,7 @@ def validate_moa(score_matrix, drug_names, pathway_names, valid_drugs, out_path,
     print(f"  MoA top-{top_k} hit: {n_hit}/{len(df)} drugs")
     print(df[["drug", "expected_kws", "moa_hits"]].to_string(index=False))
     return df
+
 
 def save_top_pathways(score_matrix, drug_names, pathway_names, valid_drugs,
                       out_path, top_k=10):
@@ -234,10 +247,11 @@ def save_top_pathways(score_matrix, drug_names, pathway_names, valid_drugs,
     print(f"  Saved: {out_path}")
     return df
 
+
 def plot_heatmap(score_matrix, drug_labels, pathway_labels, title, out_path,
                  top_n_drugs=30, top_n_paths=40):
     if sns is None:
-        print(f"  (seaborn not installed; skipping heatmap: {out_path})")
+        print(f"  (seaborn not installed; skipping the heatmap: {out_path})")
         return
     var = score_matrix.var(axis=0)
     top_p = np.argsort(var)[::-1][:top_n_paths]
@@ -259,8 +273,9 @@ def plot_heatmap(score_matrix, drug_labels, pathway_labels, title, out_path,
     plt.close()
     print(f"  Saved: {out_path}")
 
+
 def save_align_weight_summary(align_weights, drug_names, valid_drugs, out_path):
-    """Per-drug [gene_branch, pathway_branch] fusion softmax weights."""
+    """Collect the [gene_branch, pathway_branch] softmax weights for each drug."""
     rows = []
     for di in valid_drugs:
         w = align_weights[di]
@@ -276,6 +291,7 @@ def save_align_weight_summary(align_weights, drug_names, valid_drugs, out_path):
     print(f"  align_weights mean: gene={df['w_gene_branch'].mean():.3f}  "
           f"pathway={df['w_pathway_branch'].mean():.3f}")
     return df
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -299,7 +315,8 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     mat_dir = cfg["mat_dir"]
     mat = load_matrices(mat_dir, cfg.get("hcdt_drug_gene_file", "hcdt_drug_gene.npy"),
-                        cfg.get("hcdt_drug_path_file", "hcdt_drug_path_direct.npy"))
+                        cfg.get("hcdt_drug_path_file", "hcdt_drug_path_direct.npy"),
+                        cfg.get("gene_pathway_file", "gene_pathway.npy"))
     cfg["fp_dim"]       = mat["drug_fp"].shape[1]
     cfg["num_genes"]    = mat["cell_expr"].shape[1]
     cfg["num_pathways"] = mat["gene_pathway"].shape[1]
@@ -333,35 +350,37 @@ def main():
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model.eval()
 
-    print("\nExtracting alignment scores (per-drug averages)...")
+    print("\nExtracting alignment scores (averaged per drug)...")
     scores = extract_scores(model, mat, cfg, device, align_branches)
 
     pathway_names = get_pathway_names(mat_dir)
     gene_names    = get_gene_names(mat_dir)
     drug_names    = get_drug_names(mat)
     valid_drugs   = scores["valid_drugs"]
-    print(f"  drugs: {len(valid_drugs)} / pathway: {len(pathway_names)} / gene: {len(gene_names)}")
+    print(f"  drugs: {len(valid_drugs)} / pathways: {len(pathway_names)} / genes: {len(gene_names)}")
 
     drug_labels = [drug_names.get(di, f"drug_{di}") for di in valid_drugs]
 
+    # -- MoA validation (path_attn is raw attention, p_path_align includes cell context) --
     if "pathway" in align_branches:
-        print("\n[1] MoA validation -- path_attn (direct pathway attention)")
+        print("\n[1] MoA validation — path_attn (direct pathway attention)")
         validate_moa(scores["path_attn"], drug_names, pathway_names, valid_drugs,
                      os.path.join(args.out_dir, "moa_path_attn.csv"))
 
-        print("\n[2] MoA validation -- p_path_align (with cell context)")
+        print("\n[2] MoA validation — p_path_align (with cell context)")
         validate_moa(scores["p_path_align"], drug_names, pathway_names, valid_drugs,
                      os.path.join(args.out_dir, "moa_p_path_align.csv"))
 
     if "gene" in align_branches:
-        print("\n[3] MoA validation -- p_gene_align (gene branch -> pathway projection)")
+        print("\n[3] MoA validation — p_gene_align (gene branch → pathway projection)")
         validate_moa(scores["p_gene_align"], drug_names, pathway_names, valid_drugs,
                      os.path.join(args.out_dir, "moa_p_gene_align.csv"))
 
-    print("\n[4] MoA validation -- p_align (fused)")
+    print("\n[4] MoA validation — p_align (fused)")
     validate_moa(scores["p_align"], drug_names, pathway_names, valid_drugs,
                  os.path.join(args.out_dir, "moa_p_align.csv"))
 
+    # ── Top-K pathways per drug ─────────────────────────────────────────────
     print("\nTop-10 pathways per drug...")
     if "pathway" in align_branches:
         save_top_pathways(scores["path_attn"], drug_names, pathway_names, valid_drugs,
@@ -369,6 +388,7 @@ def main():
     save_top_pathways(scores["p_align"], drug_names, pathway_names, valid_drugs,
                       os.path.join(args.out_dir, "top_p_align.csv"))
 
+    # ── Align-branch weights per drug ───────────────────────────────────────
     if args.align == "both":
         print("\nAlign-branch weights per drug...")
         save_align_weight_summary(
@@ -376,23 +396,26 @@ def main():
             os.path.join(args.out_dir, "align_weights.csv"),
         )
 
+    # ── Heatmaps ────────────────────────────────────────────────────────────
     print("\nHeatmaps...")
     if "pathway" in align_branches:
         plot_heatmap(
             scores["path_attn"][valid_drugs], drug_labels, pathway_names,
-            title="HDCA-Net: Drug-Pathway Attention (path_attn)",
+            title="HDCA-Net: Drug–Pathway Attention (path_attn)",
             out_path=os.path.join(args.out_dir, "heatmap_path_attn.png"),
         )
     plot_heatmap(
         scores["p_align"][valid_drugs], drug_labels, pathway_names,
-        title="HDCA-Net: Fused Drug-Pathway Alignment (p_align)",
+        title="HDCA-Net: Fused Drug–Pathway Alignment (p_align)",
         out_path=os.path.join(args.out_dir, "heatmap_p_align.png"),
     )
 
+    # -- save the raw scores -----------------------------------------------------
     for k, v in scores.items():
         if isinstance(v, np.ndarray) and v.ndim == 2:
             np.save(os.path.join(args.out_dir, f"{k}.npy"), v)
-    print(f"\nDone. Output: {args.out_dir}/")
+    print(f"\ndone. results in {args.out_dir}/")
+
 
 if __name__ == "__main__":
     main()

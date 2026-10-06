@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+
 class PancdrDataset(Dataset):
     """Yields (drug_feat, drug_adj, gexpr, y) for PANCDR.
 
@@ -34,6 +35,7 @@ class PancdrDataset(Dataset):
             torch.from_numpy(self.cell_expr[ci]),
             torch.tensor(self.y[idx], dtype=torch.float32),
         )
+
 
 class ExprOnlyDataset(Dataset):
     """Unlabeled target-domain expression (for the adversarial discriminator)."""

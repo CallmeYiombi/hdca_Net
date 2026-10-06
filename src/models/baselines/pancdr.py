@@ -7,7 +7,7 @@ official repo) adapted to our HDCA-Net harness:
   * Drug encoder : molecular-graph GraphConv stack (DeepCDR-style), fed with our
                    own rdkit graphs (drug_atom_feats.npy / drug_adj_norm.npy).
   * Expr encoder : VAE-style MLP encoder producing a latent z (KL is *not* used
-                   in the loss, matching the original -- reparametrise acts as a
+                   in the loss, matching the original — reparametrise acts as a
                    stochastic bottleneck).
   * Predictor    : concat(drug, z) -> Linear(300) -> Conv2d stack -> scalar.
   * Discriminator: aligns source (GDSC) vs target (CCLE/gCSI) expression latents
@@ -21,6 +21,7 @@ from torch import Tensor
 from torch.nn.parameter import Parameter
 import torch.nn.init as init
 from typing import Optional
+
 
 class GraphConv(nn.Module):
     """Original PANCDR GraphConv: X' = A^T (X W + b)."""
@@ -45,11 +46,12 @@ class GraphConv(nn.Module):
         return torch.gt(deeper, 0.0)
 
     def forward(self, features: Tensor, edges: Tensor) -> Tensor:
-        outputs = torch.matmul(features, self.weight) + self.bias
+        outputs = torch.matmul(features, self.weight) + self.bias   # (B, N, units)
         if self.step_num > 1:
             edges = self._get_walked_edges(edges, self.step_num)
-        outputs = torch.matmul(edges.permute(0, 2, 1), outputs)
-        return outputs.permute(0, 2, 1)
+        outputs = torch.matmul(edges.permute(0, 2, 1), outputs)      # (B, N, units)
+        return outputs.permute(0, 2, 1)                              # (B, units, N)
+
 
 class ExprEncoder(nn.Module):
     """VAE-style expression encoder. forward returns (z, mu, logvar)."""
@@ -78,6 +80,7 @@ class ExprEncoder(nn.Module):
         mu, logvar = self.encode(x)
         z = self.reparametrize(mu, logvar) if sample else mu
         return z, mu, logvar
+
 
 class DrugCDRNet(nn.Module):
     """Drug-graph GCN + CNN predictor. Takes an already-encoded expr latent."""
@@ -116,12 +119,13 @@ class DrugCDRNet(nn.Module):
         h = self.BRD1(self.GC1(drug_feat, drug_adj)).permute(0, 2, 1)
         h = self.BRD2(self.GC2(h, drug_adj)).permute(0, 2, 1)
         h = self.BRD3(self.GC3(h, drug_adj)).permute(0, 2, 1)
-        h = self.BRD4(self.GC4(h, drug_adj))
-        x_drug = self.Pool(h).view(h.shape[0], -1)
-        x = torch.cat((x_drug, z_gexpr), dim=1)
+        h = self.BRD4(self.GC4(h, drug_adj))                    # (B, d_dim, N)
+        x_drug = self.Pool(h).view(h.shape[0], -1)             # (B, d_dim)
+        x = torch.cat((x_drug, z_gexpr), dim=1)               # (B, d_dim+nz)
         x = self.Linear(x).view(-1, 1, 300, 1)
-        x = self.CONV(x).view(x.shape[0], -1)
+        x = self.CONV(x).view(x.shape[0], -1)                 # (B, 30)
         return self.fc(x)
+
 
 class Discriminator(nn.Module):
     """Domain discriminator on the expression latent (source vs target)."""
@@ -136,6 +140,7 @@ class Discriminator(nn.Module):
 
     def forward(self, x):
         return self.adv(x)
+
 
 class PANCDR(nn.Module):
     """Convenience wrapper bundling the three sub-models."""

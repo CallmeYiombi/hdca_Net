@@ -1,14 +1,19 @@
+#!/usr/bin/env python3
+r"""
+Compare two models whose candidate spaces differ in size (3,143 HCDT pathways against 34 KEGG).
 
-"""Scale-free comparison of mechanism recovery across models.
-
-A fixed top-K cut-off is a weaker filter for a model that ranks 34 pathways than for one that
-ranks 3,143, so this script reports, in addition to the hit rate, the percentile of the expected
-pathway in each model's own ranking, the enrichment over the chance level implied by its
-candidate set, and the mean reciprocal rank.
+A top-10 hit rate has a chance level that depends on the number of candidates (10 of 34 is 29%,
+10 of 3,143 is 0.3%), so scale-free measures are reported alongside it:
+  - median percentile : rank percentile of the expected pathway (lower is better)
+  - enrichment        : hit@K / chance@K,  chance@K = 1 - C(N-|E|,K)/C(N,K)
+  - MRR               : mean reciprocal rank
 
 Usage:
-  python scripts/rank_metrics.py --hdca <scores.npy> [...] [--per_drug out.csv]
-  python scripts/rank_metrics.py --drpreter <scores.npz> [...]
+  # HDCA-Net (npy files from the interpret output folder)
+  python scripts/rank_metrics.py --hdca results/interpret_hdca/prn_s{1..6}/path_attn.npy
+  python scripts/rank_metrics.py --hdca results/interpret_hdca/prn_s{1..6}/p_gene_align.npy
+  # DRPreter (scores.npz)
+  python scripts/rank_metrics.py --drpreter DRPreter-main/Result_HDCA/interpret/seed*/scores.npz
 """
 import os, re, sys, json, argparse
 from math import comb
@@ -23,10 +28,13 @@ for _c in (os.path.join(os.getcwd(), "src", "analysis"),
 try:
     from interpret_hdca import DRUG_MOA
 except ModuleNotFoundError:
-    sys.exit("Could not locate src/analysis/interpret_hdca.py; run this from the project root.")
+    sys.exit("could not find src/analysis/interpret_hdca.py; "
+             "run this from the project root, e.g. python scripts/rank_metrics.py ...")
+
 
 def wb(kw, text):
     return re.search(rf"\b{re.escape(kw)}\d*\b", str(text), re.IGNORECASE) is not None
+
 
 def per_drug(scores, names, kws, K=10):
     E = [i for i, n in enumerate(names) if any(wb(k, n) for k in kws)]
@@ -38,6 +46,7 @@ def per_drug(scores, names, kws, K=10):
     chance = 1 - comb(N - len(E), K) / comb(N, K) if N - len(E) >= K else 1.0
     return r, N, len(E), int(r <= K), chance
 
+
 def summarize(rows, label):
     r = np.array([x[0] for x in rows]); N = rows[0][1]
     hit = np.array([x[3] for x in rows]); ch = np.array([x[4] for x in rows])
@@ -48,15 +57,16 @@ def summarize(rows, label):
     return dict(n=len(rows), hit=hit.mean()*100, chance=ch.mean()*100,
                 enrich=hit.mean()/ch.mean(), med_pct=float(np.median(pct)), mrr=float(np.mean(1/r)))
 
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--hdca", nargs="*", default=[], help="HDCA-Net interpretability score files, one per seed")
-    ap.add_argument("--drpreter", nargs="*", default=[], help="DRPreter scores.npz files, one per seed")
+    ap.add_argument("--hdca", nargs="*", default=[], help="HDCA-Net interpret npy, one per seed")
+    ap.add_argument("--drpreter", nargs="*", default=[], help="DRPreter scores.npz, one per seed")
     ap.add_argument("--matrices", default="data/matrices_gdsc12")
     ap.add_argument("--topk", type=int, default=10)
     ap.add_argument("--out", default=None)
     ap.add_argument("--per_drug", default=None,
-                    help="dump per-drug, per-seed ranks and hits to CSV")
+                    help="dump the per-drug, per-seed rank and hit to CSV")
     args = ap.parse_args()
     res = {"hdca": [], "drpreter": []}
     pd_rows = []
@@ -116,6 +126,7 @@ def main():
         with open(args.per_drug, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=list(pd_rows[0].keys())); w.writeheader(); w.writerows(pd_rows)
         print("saved:", args.per_drug)
+
 
 if __name__ == "__main__":
     main()

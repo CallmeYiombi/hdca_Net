@@ -1,0 +1,22 @@
+{
+  "db_type": "dgidb",
+  "n_panel": 542,
+  "n_matched": 208,
+  "n_target": 207,
+  "n_eval": 144,
+  "broad_mean": 19.444444444444446,
+  "broad_std": 1.7568209223157671,
+  "direct_mean": 44.09722222222223,
+  "direct_std": 2.0006750404011013,
+  "perm_real": 42.36111111111111,
+  "perm_null_mean": 5.065347222222222,
+  "perm_p": 9.999000099990002e-05,
+  "mcnemar_direct_gain": 36,
+  "mcnemar_broad_gain": 5,
+  "mcnemar_p": 7.84157236921601e-07,
+  "params": {
+    "topn": 2,
+    "max_path_size": 15,
+    "topk": 10
+  }
+}

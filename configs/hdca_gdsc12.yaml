@@ -1,7 +1,7 @@
-# HDCA-Net, random-split and drug-fold training on GDSC1+2.
 mat_dir: data/matrices_gdsc12
 out_dir: results/hdca_gdsc12
 
+# Model — HDCA-Net (Hierarchical Drug-Cell Cross-Alignment)
 drug_enc_hidden: 512
 drug_enc_out: 256
 gate_mode: hard
@@ -9,9 +9,11 @@ gate_gamma: 2.0
 fp_input_dropout: 0.0
 use_mutation: false
 dropout: 0.3
-lambda_neg: 0.1
-mask_dropout: 0.1
+lambda_neg: 0.1            # negative DTI auxiliary loss weight (gene-level branch)
+mask_dropout: 0.1          # zero out HCDT mask entries during training
+# align branches are selected by the CLI flag --align {gene,pathway,both} (train_hdca.py)
 
+# Training
 seed: 42
 epochs: 150
 batch_size: 1024
@@ -21,6 +23,10 @@ lr_patience: 7
 early_stop: 30
 num_workers: 4
 
+# Ablation budget (drug-5fold)
 ablation_epochs: 60
 ablation_early_stop: 15
 ablation_lr_patience: 5
+
+# GPU (B200 #4)
+cuda_device: 4

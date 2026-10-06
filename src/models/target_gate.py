@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class HCDTTargetGate(nn.Module):
     """
     Projects drug embedding onto HCDT target gene space.
@@ -27,12 +28,12 @@ class HCDTTargetGate(nn.Module):
         hcdt_mask      : (B, G) float, 1 if HCDT relation exists else 0
         returns        : (B, G) attention weights summing to 1
         """
-        q = self.query(drug_embedding)
-        score = q @ gene_embedding.T / self.scale
+        q = self.query(drug_embedding)           # (B, gene_dim)
+        score = q @ gene_embedding.T / self.scale  # (B, G)
 
         if self.mode == "hard":
             score = score.masked_fill(hcdt_mask <= 0, -1e9)
         elif self.mode == "soft":
             score = score + self.gamma * hcdt_mask
 
-        return torch.softmax(score, dim=-1)
+        return torch.softmax(score, dim=-1)       # (B, G)
