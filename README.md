@@ -19,6 +19,10 @@ pip install -r requirements.txt
 `rdkit` is needed only to rebuild Morgan fingerprints, and `seaborn` only for the
 interpretability heatmaps.
 
+All reported results were produced with Python 3.11.11 and PyTorch 2.11.0 (CUDA 13.0 build) on a
+single NVIDIA B200 GPU; `requirements.txt` pins the package versions used. Other recent versions
+are expected to work but may change results in the last decimal places.
+
 ## Data
 
 Response and expression data are not redistributed here. Obtain them from their sources and
