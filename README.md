@@ -133,3 +133,8 @@ Runs are seeded through `--seed`, and every reported number is the mean over six
 stated otherwise. `--tag` keeps per-seed outputs in separate directories. Metrics computed
 before winsorization are not on the same scale as the reported tables and are used only for
 comparisons internal to a single experiment.
+
+## License
+
+The code is released under the MIT License; see `LICENSE`. Input data are not redistributed
+and remain under the terms of their original sources (GDSC, DepMap, PharmacoGx/ORCESTRA, HCDT, DGIdb).
